@@ -76,6 +76,13 @@
 #include "../fingerprint_detect/fingerprint_detect.h"
 #include "../../../gpu/drm/msm/sde/sde_trace.h"
 
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+#include <linux/moduleparam.h>
+bool haptic_feedback_disable_fprs = false;
+module_param(haptic_feedback_disable_fprs, bool, 0644);
+void hap_ignore_next_request(void);
+#endif
+
 #define FP_DEV_NAME "silead_fp"
 #define FP_DEV_MAJOR 0	/* assigned */
 
@@ -570,6 +577,9 @@ static int silfp_fb_callback(struct notifier_block *notif,
     case MSM_DRM_BLANK_UNBLANK:
         LOG_MSG_DEBUG(INFO_LOG, "[%s] LCD ON\n", __func__);
         fp_dev->scr_off = 0;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+        screen_off = 0;
+#endif
         silfp_netlink_send(fp_dev, SIFP_NETLINK_SCR_ON);
                sysfs_notify(&fp_dev->spi->dev.kobj,
                                NULL, dev_attr_screen_state.attr.name);
@@ -578,6 +588,9 @@ static int silfp_fb_callback(struct notifier_block *notif,
     case MSM_DRM_BLANK_POWERDOWN:
         LOG_MSG_DEBUG(INFO_LOG, "[%s] LCD OFF\n", __func__);
         fp_dev->scr_off = 1;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+        screen_off = 1;
+#endif
         silfp_netlink_send(fp_dev, SIFP_NETLINK_SCR_OFF);
                sysfs_notify(&fp_dev->spi->dev.kobj,
                                NULL, dev_attr_screen_state.attr.name);
@@ -664,6 +677,11 @@ static irqreturn_t silfp_irq_handler(int irq, void *dev_id)
     } else {
         LOG_MSG_DEBUG(INFO_LOG, "[%s] irq ignore\n", __func__);
     }
+
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+    if (screen_off && haptic_feedback_disable_fprs)
+        hap_ignore_next_request();
+#endif
 
     return IRQ_HANDLED;
 }
