@@ -10,5 +10,8 @@ struct fingerprint_detect_data {
 	int sensor_version;
 };
 extern int fp_version;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+extern bool screen_off;
+#endif
 #endif
 

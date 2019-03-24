@@ -10,6 +10,9 @@
 
 #include "fingerprint_detect.h"
 int fp_version;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE
+bool screen_off = false;
+#endif
 
 static int fingerprint_detect_request_named_gpio(
 		struct fingerprint_detect_data *fp_detect,
