@@ -27,12 +27,14 @@ static int RamRead32A(struct cam_ois_ctrl_t *o_ctrl,
 {
     int32_t rc = 0;
     int retry = 3;
+    int i = 0;
+
     if (o_ctrl == NULL) {
         CAM_ERR(CAM_OIS, "Invalid Args dev");
         return -EINVAL;
     }
     //CAM_INFO(CAM_OIS, "o_ctrl valid, power state = %d, iomaster = %p dev" , o_ctrl->cam_ois_state,&(o_ctrl->io_master_info));
-    for(int i = 0; i < retry; i++)
+    for(i = 0; i < retry; i++)
     {
         rc = camera_io_dev_read(&(o_ctrl->io_master_info), (uint32_t)addr, (uint32_t *)data,
             CAMERA_SENSOR_I2C_TYPE_WORD, CAMERA_SENSOR_I2C_TYPE_DWORD);
