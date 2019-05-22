@@ -32,6 +32,7 @@ USERINCLUDE     += \
 # Needed to be compatible with the O= option
 LINUXINCLUDE    += \
                 -I$(srctree)/techpack/audio/include/uapi \
+                -I$(srctree)/techpack/audio/include/elliptic \
                 -I$(srctree)/techpack/audio/include
 
 ifeq ($(CONFIG_ARCH_SDM845), y)
@@ -58,11 +59,6 @@ ifeq ($(CONFIG_ARCH_SDMSHRIKE), y)
 LINUXINCLUDE    += \
                 -include $(srctree)/techpack/audio/config/sm8150autoconf.h
 endif
-
-#for add ultrasound proximity,zhanglei@MM.Audio 2019/01/06
-LINUXINCLUDE    += \
-                -I$(srctree)/techpack/audio/include/elliptic
-obj-y += dsp/elliptic
 
 obj-y += soc/
 obj-y += dsp/
