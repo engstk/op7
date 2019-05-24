@@ -284,14 +284,7 @@ static ssize_t hbm_show(struct device *dev,
 
 	hbm_mode = dsi_display_get_hbm_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "hbm mode = %d\n"
-											"0--hbm mode(off)\n"
-											"1--hbm mode(XX)\n"
-											"2--hbm mode(XX)\n"
-											"3--hbm mode(XX)\n"
-											"4--hbm mode(XX)\n"
-											"5--hbm mode(670)\n",
-											hbm_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", hbm_mode);
 	return ret;
 }
 
@@ -422,10 +415,7 @@ static ssize_t aod_disable_show(struct device *dev,
 
 	aod_disable = dsi_display_get_aod_disable(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "AOD disable = %d\n"
-											"0--AOD enable\n"
-											"1--AOD disable\n",
-											aod_disable);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", aod_disable);
 	return ret;
 }
 
@@ -458,10 +448,7 @@ static ssize_t DCI_P3_show(struct device *dev,
 
 	dci_p3_mode = dsi_display_get_dci_p3_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "dci-p3 mode = %d\n"
-											"0--dci-p3 mode Off\n"
-											"1--dci-p3 mode On\n",
-											dci_p3_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", dci_p3_mode);
 	return ret;
 }
 
@@ -494,10 +481,7 @@ static ssize_t night_mode_show(struct device *dev,
 
 	night_mode = dsi_display_get_night_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "night mode = %d\n"
-											"0--night mode Off\n"
-											"1--night mode On\n",
-											night_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", night_mode);
 	return ret;
 }
 
@@ -530,10 +514,7 @@ static ssize_t native_display_p3_mode_show(struct device *dev,
 
 	native_display_p3_mode = dsi_display_get_native_display_p3_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display p3 mode = %d\n"
-											"0--native display p3 mode Off\n"
-											"1--native display p3 mode On\n",
-											native_display_p3_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_p3_mode);
 	return ret;
 }
 
@@ -565,10 +546,7 @@ static ssize_t native_display_wide_color_mode_show(struct device *dev,
 
 	native_display_wide_color_mode = dsi_display_get_native_display_wide_color_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display wide color mode = %d\n"
-											"0--native display wide color mode Off\n"
-											"1--native display wide color mode On\n",
-											native_display_wide_color_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_wide_color_mode);
 	return ret;
 }
 
@@ -601,10 +579,7 @@ static ssize_t native_display_loading_effect_mode_show(struct device *dev,
 
 	native_display_loading_effect_mode = dsi_display_get_native_display_loading_effect_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display loading effect mode = %d\n"
-											"0--native display loading effect mode Off\n"
-											"1--native display loading effect mode On\n",
-											native_display_loading_effect_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_loading_effect_mode);
 	return ret;
 }
 
@@ -637,10 +612,7 @@ static ssize_t native_display_customer_p3_mode_show(struct device *dev,
 
 	native_display_customer_p3_mode = dsi_display_get_customer_p3_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display customer p3 mode = %d\n"
-											"0--native display customer p3 mode Off\n"
-											"1--native display customer p3 mode On\n",
-											native_display_customer_p3_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_customer_p3_mode);
 	return ret;
 }
 static ssize_t native_display_customer_srgb_mode_store(struct device *dev,
@@ -672,10 +644,7 @@ static ssize_t native_display_customer_srgb_mode_show(struct device *dev,
 
 	native_display_customer_srgb_mode = dsi_display_get_customer_srgb_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display customer srgb mode = %d\n"
-											"0--native display customer srgb mode Off\n"
-											"1--native display customer srgb mode On\n",
-											native_display_customer_srgb_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_customer_srgb_mode);
 	return ret;
 }
 
@@ -709,10 +678,7 @@ static ssize_t native_display_srgb_color_mode_show(struct device *dev,
 
 	native_display_srgb_color_mode = dsi_display_get_native_display_srgb_color_mode(connector);
 
-	ret = scnprintf(buf, PAGE_SIZE, "native display srgb color mode = %d\n"
-											"0--native display srgb color mode Off\n"
-											"1--native display srgb color mode On\n",
-											native_display_srgb_color_mode);
+	ret = scnprintf(buf, PAGE_SIZE, "%d\n", native_display_srgb_color_mode);
 	return ret;
 }
 
