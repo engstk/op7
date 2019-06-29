@@ -1,4 +1,4 @@
-subdir-ccflags-y += -Werror
+#subdir-ccflags-y += -Werror
 subdir-ccflags-y += -Wno-unused-variable
 
 obj-y		+= camera_motor_ic/

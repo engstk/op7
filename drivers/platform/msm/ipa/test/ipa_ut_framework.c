@@ -866,7 +866,7 @@ static ssize_t ipa_ut_dbgfs_enable_write(struct file *file,
 		return -E2BIG;
 	}
 
-	if (copy_from_user(lcl_buf, buf, count)) {
+	if (copy_from_user(lcl_buf, buf, sizeof(lcl_buf))) {
 		IPA_UT_ERR("fail to copy buf from user space\n");
 		return -EFAULT;
 	}

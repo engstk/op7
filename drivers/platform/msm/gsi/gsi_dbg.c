@@ -48,7 +48,7 @@ static ssize_t gsi_dump_evt(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		return -EINVAL;
 
-	missing = copy_from_user(dbg_buff, buf, count);
+	missing = copy_from_user(dbg_buff, buf, sizeof(dbg_buff));
 	if (missing)
 		return -EFAULT;
 
@@ -161,7 +161,7 @@ static ssize_t gsi_dump_ch(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		return -EINVAL;
 
-	missing = copy_from_user(dbg_buff, buf, count);
+	missing = copy_from_user(dbg_buff, buf, sizeof(dbg_buff));
 	if (missing)
 		return -EFAULT;
 
@@ -301,7 +301,7 @@ static ssize_t gsi_dump_stats(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		goto error;
 
-	if (copy_from_user(dbg_buff, buf, count))
+	if (copy_from_user(dbg_buff, buf, sizeof(dbg_buff)))
 		goto error;
 
 	dbg_buff[count] = '\0';
@@ -360,7 +360,7 @@ static ssize_t gsi_enable_dp_stats(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		goto error;
 
-	if (copy_from_user(dbg_buff, buf, count))
+	if (copy_from_user(dbg_buff, buf, sizeof(dbg_buff)))
 		goto error;
 
 	dbg_buff[count] = '\0';
@@ -420,7 +420,7 @@ static ssize_t gsi_set_max_elem_dp_stats(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		goto error;
 
-	missing = copy_from_user(dbg_buff, buf, count);
+	missing = copy_from_user(dbg_buff, buf, sizeof(dbg_buff));
 	if (missing)
 		goto error;
 
@@ -542,7 +542,7 @@ static ssize_t gsi_rst_stats(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		goto error;
 
-	if (copy_from_user(dbg_buff, buf, count))
+	if (copy_from_user(dbg_buff, buf, sizeof(dbg_buff)))
 		goto error;
 
 	dbg_buff[count] = '\0';
@@ -581,7 +581,7 @@ static ssize_t gsi_print_dp_stats(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		goto error;
 
-	if (copy_from_user(dbg_buff, buf, count))
+	if (copy_from_user(dbg_buff, buf, sizeof(dbg_buff)))
 		goto error;
 
 	dbg_buff[count] = '\0';
@@ -638,7 +638,7 @@ static ssize_t gsi_enable_ipc_low(struct file *file,
 	if (sizeof(dbg_buff) < count + 1)
 		return -EFAULT;
 
-	missing = copy_from_user(dbg_buff, ubuf, count);
+	missing = copy_from_user(dbg_buff, ubuf, sizeof(dbg_buff));
 	if (missing)
 		return -EFAULT;
 
