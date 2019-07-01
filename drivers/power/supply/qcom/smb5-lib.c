@@ -7654,12 +7654,18 @@ static void op_handle_usb_removal(struct smb_charger *chg)
 	chg->ck_unplug_count = 0;
 	chg->count_run = 0;
 	chg->chg_disabled = 0;
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	chg->ffc_count = 0;
+#endif
 	vote(chg->fcc_votable,
 		DEFAULT_VOTER, true, SDP_CURRENT_UA);
 	vote(chg->chg_disable_votable,
 		FORCE_RECHARGE_VOTER, false, 0);
 	vote(chg->usb_icl_votable,
 		AICL_RERUN_VOTER, false, 0);
+#ifdef CONFIG_FORCE_FAST_CHARGE
+	set_sdp_current(chg, USBIN_500MA);
+#endif
 	op_battery_temp_region_set(chg, BATT_TEMP_INVALID);
 }
 
