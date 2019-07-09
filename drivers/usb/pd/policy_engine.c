@@ -417,7 +417,6 @@ struct usbpd {
 	bool			peer_usb_comm;
 	bool			peer_pr_swap;
 	bool			peer_dr_swap;
-	bool		oem_bypass;
 	bool		periph_direct;
 
 	u32			sink_caps[7];
@@ -1329,6 +1328,8 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 		}
 
 
+		dual_role_instance_changed(pd->dual_role);
+
 		val.intval = 1; /* Rp-1.5A; SinkTxNG for PD 3.0 */
 		power_supply_set_property(pd->usb_psy,
 				POWER_SUPPLY_PROP_TYPEC_SRC_RP, &val);
@@ -1427,21 +1428,17 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 
 			usbpd_err(&pd->dev, "Invalid request: %08x\n", pd->rdo);
 
-			if (pd->oem_bypass) {
-				usbpd_info(&pd->dev, "oem bypass invalid request!\n");
-			} else {
-				if (pd->in_explicit_contract)
-					usbpd_set_state(pd, PE_SRC_READY);
-				else
-					/*
-					 * bypass PE_SRC_Capability_Response and
-					 * PE_SRC_Wait_New_Capabilities in this
-					 * implementation for simplicity.
-					 */
-					usbpd_set_state(pd,
-						PE_SRC_SEND_CAPABILITIES);
-				break;
-			}
+			if (pd->in_explicit_contract)
+				usbpd_set_state(pd, PE_SRC_READY);
+			else
+				/*
+				 * bypass PE_SRC_Capability_Response and
+				 * PE_SRC_Wait_New_Capabilities in this
+				 * implementation for simplicity.
+				 */
+				usbpd_set_state(pd, PE_SRC_SEND_CAPABILITIES);
+			break;
+
 		}
 
 		/* PE_SRC_TRANSITION_SUPPLY pseudo-state */
@@ -1574,6 +1571,8 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 					start_usb_peripheral(pd);
 			}
 		}
+
+		dual_role_instance_changed(pd->dual_role);
 
 		pd_reset_protocol(pd);
 
@@ -4564,7 +4563,6 @@ struct usbpd *usbpd_create(struct device *parent)
 		pd->dual_role->drv_data = pd;
 	}
 
-	pd->oem_bypass = true;
 	pd->periph_direct = false;
 	pd->current_pr = PR_NONE;
 	pd->current_dr = DR_NONE;
