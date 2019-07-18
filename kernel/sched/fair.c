@@ -8208,7 +8208,8 @@ out:
 #ifdef CONFIG_OPCHAIN
 	trace_sched_task_util(p, next_cpu, backup_cpu, target_cpu, sync,
 			need_idle, fbt_env.fastpath, placement_boost,
-			rtg_target ? cpumask_first(rtg_target) : -1, is_uxtop, start_t);
+			rtg_target ? cpumask_first(rtg_target) : -1, is_uxtop, start_t,
+			boosted);
 #else
 	trace_sched_task_util(p, next_cpu, backup_cpu, target_cpu, sync,
 			need_idle, fbt_env.fastpath, placement_boost,
