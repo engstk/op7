@@ -4812,6 +4812,8 @@ irqreturn_t usb_plugin_irq_handler(int irq, void *data)
 	struct smb_irq_data *irq_data = data;
 	struct smb_charger *chg = irq_data->parent_data;
 
+	if (chg->count_run)
+		chg->count_run = 0;
 	if (chg->pd_hard_reset)
 		smblib_usb_plugin_hard_reset_locked(chg);
 	else
@@ -5884,6 +5886,7 @@ static void op_get_aicl_work(struct work_struct *work)
 #define NORMAL_CHECK_INTERVAL 300 /*ms*/
 #define FAST_CHECK_INTERVAL 100 /*ms*/
 #define HIGH_TEMP_SHORT_CHECK_TIMEOUT 1500 /*ms*/
+#define LOOP_ENTER_TEMP 40
 
 static void op_connect_temp_check_work(struct work_struct *work)
 {
@@ -5891,7 +5894,7 @@ static void op_connect_temp_check_work(struct work_struct *work)
 	struct smb_charger *chg = container_of(dwork,
 				struct smb_charger, connecter_check_work);
 	int batt_temp = 0, interval_temp = 0;
-	int i;
+	int i = 0, loop_enter_temp = 0;
 
 	if (!chg->vbus_present)
 		return;
@@ -5899,6 +5902,11 @@ static void op_connect_temp_check_work(struct work_struct *work)
 	chg->connecter_temp = get_usb_temp(chg);
 	batt_temp = get_prop_batt_temp(chg)/10;
 	interval_temp = chg->connecter_temp - batt_temp;
+
+	if (*chg->usb_connector_temp)
+		loop_enter_temp = *chg->usb_connector_temp;
+	else
+		loop_enter_temp = LOOP_ENTER_TEMP;
 
 	if (!chg->count_run) {/*count run state keep count_total not change*/
 		if (chg->connecter_temp >= 45) {
@@ -5958,8 +5966,8 @@ static void op_connect_temp_check_work(struct work_struct *work)
 					chg->connecter_temp);
 			op_disconnect_vbus(chg, true);
 			return;
-		} else if (chg->connecter_temp >= 35) {
-		/* >= 35 enter*/
+		} else if (chg->connecter_temp >= loop_enter_temp) {
+		/* >= 40 enter*/
 			if (chg->count_run <= chg->count_total) {
 			/*time out count*/
 				if (chg->count_run == 0)
@@ -5986,7 +5994,7 @@ static void op_connect_temp_check_work(struct work_struct *work)
 					smblib_dbg(chg, PR_FAST_DEBUG, "count reset!\n");
 				}
 			}
-		} else {/*<10*/
+		} else {/*<40*/
 			if (chg->count_run)/* high temp cold down count reset.*/
 				chg->count_run = 0;
 			smblib_dbg(chg, PR_FAST_DEBUG,
@@ -6235,6 +6243,7 @@ static void op_handle_usb_removal(struct smb_charger *chg)
 	chg->re_trigr_dash_done = 0;
 	chg->recovery_boost_count = 0;
 	chg->ck_unplug_count = 0;
+	chg->count_run = 0;
 #ifdef CONFIG_FORCE_FAST_CHARGE
 	chg->ffc_count = 0;
 #endif
@@ -8121,6 +8130,10 @@ static int get_usb_temp(struct smb_charger *chg)
 
 void op_disconnect_vbus(struct smb_charger *chg, bool enable)
 {
+	if (*chg->disable_connector_protect) {
+		pr_info("disable usb connector protect, return!\n");
+		return;
+	}
 #ifdef	CONFIG_OP_DEBUG_CHG
 /* *#806# aging test not need Vbus disconnect feature*/
 	return;
