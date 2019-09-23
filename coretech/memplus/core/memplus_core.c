@@ -102,7 +102,7 @@ unsigned long coretech_reclaim_pagelist(struct list_head *page_list, struct vm_a
 unsigned long swapout_to_zram(struct list_head *page_list, struct vm_area_struct *vma);
 unsigned long swapout_to_disk(struct list_head *page_list, struct vm_area_struct *vma);
 
-bool ctech_current_is_swapind() {
+bool ctech_current_is_swapind(void) {
 	return current == swapind_tsk;
 }
 
