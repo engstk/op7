@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  * Copyright (C) 2014 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -31,6 +31,7 @@ struct msm_commit {
 	struct drm_device *dev;
 	struct drm_atomic_state *state;
 	uint32_t crtc_mask;
+	uint32_t plane_mask;
 	bool nonblock;
 	struct kthread_work commit_work;
 };
@@ -81,16 +82,19 @@ static int msm_drm_notifier_call_chain(unsigned long val, void *v)
 /* block until specified crtcs are no longer pending update, and
  * atomically mark them as pending update
  */
-static int start_atomic(struct msm_drm_private *priv, uint32_t crtc_mask)
+static int start_atomic(struct msm_drm_private *priv, uint32_t crtc_mask,
+			uint32_t plane_mask)
 {
 	int ret;
 
 	spin_lock(&priv->pending_crtcs_event.lock);
 	ret = wait_event_interruptible_locked(priv->pending_crtcs_event,
-			!(priv->pending_crtcs & crtc_mask));
+			!(priv->pending_crtcs & crtc_mask) &&
+			!(priv->pending_planes & plane_mask));
 	if (ret == 0) {
 		DBG("start: %08x", crtc_mask);
 		priv->pending_crtcs |= crtc_mask;
+		priv->pending_planes |= plane_mask;
 	}
 	spin_unlock(&priv->pending_crtcs_event.lock);
 
@@ -99,18 +103,20 @@ static int start_atomic(struct msm_drm_private *priv, uint32_t crtc_mask)
 
 /* clear specified crtcs (no longer pending update)
  */
-static void end_atomic(struct msm_drm_private *priv, uint32_t crtc_mask)
+static void end_atomic(struct msm_drm_private *priv, uint32_t crtc_mask,
+			uint32_t plane_mask)
 {
 	spin_lock(&priv->pending_crtcs_event.lock);
 	DBG("end: %08x", crtc_mask);
 	priv->pending_crtcs &= ~crtc_mask;
+	priv->pending_planes &= ~plane_mask;
 	wake_up_all_locked(&priv->pending_crtcs_event);
 	spin_unlock(&priv->pending_crtcs_event.lock);
 }
 
 static void commit_destroy(struct msm_commit *c)
 {
-	end_atomic(c->dev->dev_private, c->crtc_mask);
+	end_atomic(c->dev->dev_private, c->crtc_mask, c->plane_mask);
 	if (c->nonblock)
 		kfree(c);
 }
@@ -124,7 +130,8 @@ static inline bool _msm_seamless_for_crtc(struct drm_atomic_state *state,
 	int conn_cnt = 0;
 
 	if (msm_is_mode_seamless(&crtc_state->mode) ||
-		msm_is_mode_seamless_vrr(&crtc_state->adjusted_mode))
+		msm_is_mode_seamless_vrr(&crtc_state->adjusted_mode) ||
+		msm_is_mode_seamless_dyn_clk(&crtc_state->adjusted_mode))
 		return true;
 
 	if (msm_is_mode_seamless_dms(&crtc_state->adjusted_mode) && !enable)
@@ -168,6 +175,10 @@ static inline bool _msm_seamless_for_conn(struct drm_connector *connector,
 			&connector->encoder->crtc->state->adjusted_mode))
 		return true;
 
+	if (msm_is_mode_seamless_dyn_clk(
+			 &connector->encoder->crtc->state->adjusted_mode))
+		return true;
+
 	if (msm_is_mode_seamless_dms(
 			&connector->encoder->crtc->state->adjusted_mode))
 		return true;
@@ -189,7 +200,12 @@ static void msm_atomic_wait_for_commit_done(
 		if (!new_crtc_state->active)
 			continue;
 
+		if (drm_crtc_vblank_get(crtc))
+			continue;
+
 		kms->funcs->wait_for_crtc_commit_done(kms, crtc);
+
+		drm_crtc_vblank_put(crtc);
 	}
 }
 
@@ -742,13 +758,14 @@ int msm_atomic_commit(struct drm_device *dev,
 
 			drm_atomic_set_fence_for_plane(new_plane_state, fence);
 		}
+		c->plane_mask |= (1 << drm_plane_index(plane));
 	}
 
 	/*
 	 * Wait for pending updates on any of the same crtc's and then
 	 * mark our set of crtc's as busy:
 	 */
-	ret = start_atomic(dev->dev_private, c->crtc_mask);
+	ret = start_atomic(dev->dev_private, c->crtc_mask, c->plane_mask);
 	if (ret)
 		goto err_free;
 

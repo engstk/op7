@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -212,8 +212,7 @@ static int cam_vfe_camif_resource_start(
 	uint32_t                             epoch0_irq_mask;
 	uint32_t                             epoch1_irq_mask;
 	uint32_t                             computed_epoch_line_cfg;
-	uint32_t                             camera_hw_version = 0;
-	int                                  rc = 0;
+	struct cam_vfe_soc_private          *soc_private;
 
 	if (!camif_res) {
 		CAM_ERR(CAM_ISP, "Error! Invalid input arguments");
@@ -227,6 +226,13 @@ static int cam_vfe_camif_resource_start(
 	}
 
 	rsrc_data = (struct cam_vfe_mux_camif_data  *)camif_res->res_priv;
+
+	soc_private = rsrc_data->soc_info->soc_private;
+
+	if (!soc_private) {
+		CAM_ERR(CAM_ISP, "Error! soc_private NULL");
+		return -ENODEV;
+	}
 
 	/*config vfe core*/
 	val = (rsrc_data->pix_pattern <<
@@ -253,18 +259,16 @@ static int cam_vfe_camif_resource_start(
 		rsrc_data->common_reg->module_ctrl[
 		CAM_VFE_TOP_VER2_MODULE_STATS]->cgc_ovd);
 
-	/* get the HW version */
-	rc = cam_cpas_get_cpas_hw_version(&camera_hw_version);
-
-	if (rc) {
-		CAM_ERR(CAM_ISP, "Couldn't find HW version. rc: %d", rc);
-		return rc;
-	}
-
 	/* epoch config */
-	switch (camera_hw_version) {
-	case CAM_CPAS_TITAN_175_V101:
-	case CAM_CPAS_TITAN_175_V100:
+	switch (soc_private->cpas_version) {
+	case CAM_CPAS_TITAN_170_V100:
+	case CAM_CPAS_TITAN_170_V110:
+	case CAM_CPAS_TITAN_170_V120:
+		cam_io_w_mb(rsrc_data->reg_data->epoch_line_cfg,
+				rsrc_data->mem_base +
+				rsrc_data->camif_reg->epoch_irq);
+		break;
+	default:
 		epoch0_irq_mask = ((rsrc_data->last_line -
 				rsrc_data->first_line) / 2) +
 				rsrc_data->first_line;
@@ -281,20 +285,6 @@ static int cam_vfe_camif_resource_start(
 				rsrc_data->first_line,
 				rsrc_data->last_line,
 				computed_epoch_line_cfg);
-		break;
-	case CAM_CPAS_TITAN_170_V100:
-	case CAM_CPAS_TITAN_170_V110:
-	case CAM_CPAS_TITAN_170_V120:
-		cam_io_w_mb(rsrc_data->reg_data->epoch_line_cfg,
-				rsrc_data->mem_base +
-				rsrc_data->camif_reg->epoch_irq);
-		break;
-	default:
-		cam_io_w_mb(rsrc_data->reg_data->epoch_line_cfg,
-				rsrc_data->mem_base +
-				rsrc_data->camif_reg->epoch_irq);
-		CAM_WARN(CAM_ISP, "Hardware version not proper: 0x%x",
-				camera_hw_version);
 		break;
 	}
 
@@ -324,12 +314,55 @@ static int cam_vfe_camif_resource_start(
 }
 
 static int cam_vfe_camif_reg_dump(
+	struct cam_vfe_mux_camif_data *camif_priv)
+{
+	uint32_t val = 0, wm_idx, offset;
+	int i = 0;
+
+	for (i = 0xA3C; i <= 0xA90; i += 8) {
+		CAM_INFO(CAM_ISP,
+			"SCALING offset 0x%x val 0x%x offset 0x%x val 0x%x",
+			i, cam_io_r_mb(camif_priv->mem_base + i), i + 4,
+			cam_io_r_mb(camif_priv->mem_base + i + 4));
+	}
+
+	for (i = 0xE0C; i <= 0xE3C; i += 4) {
+		val = cam_io_r_mb(camif_priv->mem_base + i);
+		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
+	}
+
+	for (wm_idx = 0; wm_idx <= 23; wm_idx++) {
+		offset = 0x2214 + 0x100 * wm_idx;
+		CAM_INFO(CAM_ISP,
+			"BUS_WM%u offset 0x%x val 0x%x offset 0x%x val 0x%x",
+			wm_idx, offset,
+			cam_io_r_mb(camif_priv->mem_base + offset),
+			offset + 4, cam_io_r_mb(camif_priv->mem_base +
+			offset + 4), offset + 8,
+			cam_io_r_mb(camif_priv->mem_base + offset + 8),
+			offset + 12, cam_io_r_mb(camif_priv->mem_base +
+			offset + 12));
+	}
+
+	offset = 0x420;
+	val = cam_soc_util_r(camif_priv->soc_info, 1, offset);
+	CAM_INFO(CAM_ISP, "CAMNOC IFE02 MaxWR_LOW offset 0x%x value 0x%x",
+		offset, val);
+
+	offset = 0x820;
+	val = cam_soc_util_r(camif_priv->soc_info, 1, offset);
+	CAM_INFO(CAM_ISP, "CAMNOC IFE13 MaxWR_LOW offset 0x%x value 0x%x",
+		offset, val);
+
+	return 0;
+}
+
+static int cam_vfe_camif_reg_dump_bh(
 	struct cam_isp_resource_node *camif_res)
 {
 	struct cam_vfe_mux_camif_data *camif_priv;
 	struct cam_vfe_soc_private *soc_private;
-	int rc = 0, i;
-	uint32_t val = 0;
+	uint32_t offset, val, wm_idx;
 
 	if (!camif_res) {
 		CAM_ERR(CAM_ISP, "Error! Invalid input arguments");
@@ -341,40 +374,85 @@ static int cam_vfe_camif_reg_dump(
 		return 0;
 
 	camif_priv = (struct cam_vfe_mux_camif_data *)camif_res->res_priv;
+	for (offset = 0x0; offset < 0x1000; offset += 0x4) {
+		val = cam_soc_util_r(camif_priv->soc_info, 0, offset);
+		CAM_DBG(CAM_ISP, "offset 0x%x value 0x%x", offset, val);
+	}
+
+	for (offset = 0x2000; offset <= 0x20B8; offset += 0x4) {
+		val = cam_soc_util_r(camif_priv->soc_info, 0, offset);
+		CAM_DBG(CAM_ISP, "offset 0x%x value 0x%x", offset, val);
+	}
+
+	for (wm_idx = 0; wm_idx <= 23; wm_idx++) {
+		for (offset = 0x2200 + 0x100 * wm_idx;
+			offset < 0x2278 + 0x100 * wm_idx; offset += 0x4) {
+			val = cam_soc_util_r(camif_priv->soc_info, 0, offset);
+			CAM_DBG(CAM_ISP,
+				"offset 0x%x value 0x%x", offset, val);
+		}
+	}
+
 	soc_private = camif_priv->soc_info->soc_private;
-	for (i = 0xA3C; i <= 0xA90; i += 4) {
-		val = cam_io_r_mb(camif_priv->mem_base + i);
-		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
+	if (soc_private->cpas_version == CAM_CPAS_TITAN_175_V120) {
+		cam_cpas_reg_read(soc_private->cpas_handle[0],
+			CAM_CPAS_REG_CAMNOC, 0x3A20, true, &val);
+		CAM_DBG(CAM_ISP, "IFE0_nRDI_MAXWR_LOW offset 0x3A20 val 0x%x",
+			val);
+
+		cam_cpas_reg_read(soc_private->cpas_handle[0],
+			CAM_CPAS_REG_CAMNOC, 0x5420, true, &val);
+		CAM_DBG(CAM_ISP, "IFE1_nRDI_MAXWR_LOW offset 0x5420 val 0x%x",
+			val);
+
+		cam_cpas_reg_read(soc_private->cpas_handle[1],
+			CAM_CPAS_REG_CAMNOC, 0x3620, true, &val);
+		CAM_DBG(CAM_ISP,
+			"IFE0123_RDI_WR_MAXWR_LOW offset 0x3620 val 0x%x", val);
+	} else {
+		cam_cpas_reg_read(soc_private->cpas_handle[0],
+			CAM_CPAS_REG_CAMNOC, 0x420, true, &val);
+		CAM_DBG(CAM_ISP, "IFE02_MAXWR_LOW offset 0x420 val 0x%x", val);
+
+		cam_cpas_reg_read(soc_private->cpas_handle[0],
+			CAM_CPAS_REG_CAMNOC, 0x820, true, &val);
+		CAM_DBG(CAM_ISP, "IFE13_MAXWR_LOW offset 0x820 val 0x%x", val);
 	}
 
-	for (i = 0xE0C; i <= 0xE3C; i += 4) {
-		val = cam_io_r_mb(camif_priv->mem_base + i);
-		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
+	return 0;
+}
+
+static int cam_vfe_camif_irq_reg_dump(
+	struct cam_isp_resource_node *camif_res)
+{
+	struct cam_vfe_mux_camif_data *camif_priv;
+	struct cam_vfe_soc_private *soc_private;
+	int rc = 0;
+
+	if (!camif_res) {
+		CAM_ERR(CAM_ISP, "Error! Invalid input arguments\n");
+		return -EINVAL;
 	}
 
-	for (i = 0x2000; i <= 0x20B8; i += 4) {
-		val = cam_io_r_mb(camif_priv->mem_base + i);
-		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
+	if ((camif_res->res_state == CAM_ISP_RESOURCE_STATE_RESERVED) ||
+		(camif_res->res_state == CAM_ISP_RESOURCE_STATE_AVAILABLE)) {
+		CAM_ERR(CAM_ISP, "Error! Invalid state\n");
+		return 0;
 	}
 
-	for (i = 0x2500; i <= 0x255C; i += 4) {
-		val = cam_io_r_mb(camif_priv->mem_base + i);
-		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
-	}
+	camif_priv = (struct cam_vfe_mux_camif_data *)camif_res->res_priv;
+	soc_private = camif_priv->soc_info->soc_private;
 
-	for (i = 0x2600; i <= 0x265C; i += 4) {
-		val = cam_io_r_mb(camif_priv->mem_base + i);
-		CAM_INFO(CAM_ISP, "offset 0x%x val 0x%x", i, val);
-	}
-
-	cam_cpas_reg_read(soc_private->cpas_handle,
-		CAM_CPAS_REG_CAMNOC, 0x420, true, &val);
-	CAM_INFO(CAM_ISP, "IFE02_MAXWR_LOW offset 0x420 val 0x%x", val);
-
-	cam_cpas_reg_read(soc_private->cpas_handle,
-		CAM_CPAS_REG_CAMNOC, 0x820, true, &val);
-	CAM_INFO(CAM_ISP, "IFE13_MAXWR_LOW offset 0x820 val 0x%x", val);
-
+	CAM_INFO(CAM_ISP,
+		"Core Id =%d Mask reg: offset 0x%x val 0x%x offset 0x%x val 0x%x",
+		camif_priv->hw_intf->hw_idx,
+		0x5c, cam_io_r_mb(camif_priv->mem_base + 0x5c),
+		0x60, cam_io_r_mb(camif_priv->mem_base + 0x60));
+	CAM_INFO(CAM_ISP,
+		"Core Id =%d Status reg: offset 0x%x val 0x%x offset 0x%x val 0x%x",
+		camif_priv->hw_intf->hw_idx,
+		0x6c, cam_io_r_mb(camif_priv->mem_base + 0x6c),
+		0x70, cam_io_r_mb(camif_priv->mem_base + 0x70));
 	return rc;
 }
 
@@ -455,7 +533,7 @@ static int cam_vfe_camif_process_cmd(struct cam_isp_resource_node *rsrc_node,
 			arg_size);
 		break;
 	case CAM_ISP_HW_CMD_GET_REG_DUMP:
-		rc = cam_vfe_camif_reg_dump(rsrc_node);
+		rc = cam_vfe_camif_reg_dump_bh(rsrc_node);
 		break;
 	case CAM_ISP_HW_CMD_SOF_IRQ_DEBUG:
 		rc = cam_vfe_camif_sof_irq_debug(rsrc_node, cmd_args);
@@ -464,6 +542,9 @@ static int cam_vfe_camif_process_cmd(struct cam_isp_resource_node *rsrc_node,
 		camif_priv =
 			(struct cam_vfe_mux_camif_data *)rsrc_node->res_priv;
 		camif_priv->camif_debug = *((uint32_t *)cmd_args);
+		break;
+	case CAM_ISP_HW_CMD_GET_IRQ_REGISTER_DUMP:
+		rc = cam_vfe_camif_irq_reg_dump(rsrc_node);
 		break;
 	default:
 		CAM_ERR(CAM_ISP,
@@ -545,10 +626,11 @@ static int cam_vfe_camif_handle_irq_bottom_half(void *handler_priv,
 		}
 		break;
 	case CAM_ISP_HW_EVENT_ERROR:
-		if (irq_status1 & camif_priv->reg_data->error_irq_mask1) {
+		if (irq_status1 & camif_priv->reg_data->error_irq_mask1 &&
+			payload->enable_reg_dump) {
 			CAM_DBG(CAM_ISP, "Received ERROR\n");
 			ret = CAM_ISP_HW_ERROR_OVERFLOW;
-			cam_vfe_camif_reg_dump(camif_node);
+			cam_vfe_camif_reg_dump(camif_node->res_priv);
 		} else {
 			ret = CAM_ISP_HW_ERROR_NONE;
 		}

@@ -59,6 +59,15 @@ SoCs:
 - QCS403
   compatible = "qcom,qcs403"
 
+- QCS401
+  compatible = "qcom,qcs401"
+
+- QCS404
+  compatible = "qcom,qcs404"
+
+- QCS407
+  compatible = "qcom,qcs407"
+
 - SDXPRAIRIE
   compatible = "qcom,sdxprairie"
 
@@ -67,6 +76,15 @@ SoCs:
 
 - TRINKET
   compatible = "qcom,trinket"
+
+- ATOLL
+  compatible = "qcom,atoll"
+
+- QCS610
+  compatible = "qcom,qcs610"
+
+- QCS410
+  compatible = "qcom,qcs410"
 
 Generic board variants:
 
@@ -79,8 +97,8 @@ Generic board variants:
 - MTP device:
   compatible = "qcom,mtp"
 
-- IDP device:
-  compatible = "qcom,idp"
+- ATP device:
+  compatible = "qcom,atp"
 
 - FLUID device:
   compatible = "qcom,fluid"
@@ -177,23 +195,43 @@ compatible = "qcom,sm6150p-qrd"
 compatible = "qcom,sa6155-adp-star"
 compatible = "qcom,sa6155p-adp-star"
 compatible = "qcom,sa6155p"
+compatible = "qcom,sa6155-adp-air"
+compatible = "qcom,sa6155p-adp-air"
 compatible = "qcom,qcs405-rumi"
 compatible = "qcom,qcs405-iot"
 compatible = "qcom,qcs403-iot"
+compatible = "qcom,qcs401-iot"
+compatible = "qcom,qcs404-iot"
+compatible = "qcom,qcs407-iot"
 compatible = "qcom,sa8155-adp-star"
 compatible = "qcom,sa8155p-adp-star"
+compatible = "qcom,sa8195p-adp-star"
+compatible = "qcom,sa8195p"
 compatible = "qcom,adp-star"
 compatible = "qcom,sa8155-v2-adp-air"
 compatible = "qcom,sa8155p-v2-adp-air"
 compatible = "qcom,adp-air"
+compatible = "qcom,sa8155-adp-alcor"
+compatible = "qcom,adp-alcor"
+compatible = "qcom,sa8155p-adp-alcor"
 compatible = "qcom,sdxprairie-rumi"
 compatible = "qcom,sdxprairie-mtp"
 compatible = "qcom,sdxprairie-cdp"
+compatible = "qcom,sa515m-ccard"
 compatible = "qcom,sdmmagpie-rumi"
 compatible = "qcom,sdmmagpie-idp"
+compatible = "qcom,sdmmagpie-atp"
 compatible = "qcom,sdmmagpie-qrd"
 compatible = "qcom,sdmmagpiep-idp"
+compatible = "qcom,sdmmagpiep-atp"
 compatible = "qcom,sdmmagpiep"
 compatible = "qcom,sdmmagpiep-qrd"
 compatible = "qcom,trinket-rumi"
 compatible = "qcom,trinket-idp"
+compatible = "qcom,trinket-qrd"
+compatible = "qcom,atoll-rumi"
+compatible = "qcom,atoll-idp"
+compatible = "qcom,atoll-atp"
+compatible = "qcom,atoll-qrd"
+compatible = "qcom,qcs610-iot"
+compatible = "qcom,qcs410-iot"

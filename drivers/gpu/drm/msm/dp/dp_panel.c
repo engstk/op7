@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -1184,7 +1184,7 @@ static void dp_panel_dsc_prepare_pps_packet(struct dp_panel *dp_panel)
 static void _dp_panel_dsc_get_num_extra_pclk(struct msm_display_dsc_info *dsc,
 				enum msm_display_compression_ratio ratio)
 {
-	unsigned int dto_n, dto_d, remainder;
+	unsigned int dto_n = 0, dto_d = 0, remainder;
 	int ack_required, last_few_ack_required, accum_ack;
 	int last_few_pclk, last_few_pclk_required;
 	int start, temp, line_width = dsc->pic_width/2;
@@ -1512,12 +1512,14 @@ static int dp_panel_dsc_prepare_basic_params(
 	struct dp_dsc_slices_per_line *rec;
 	int slice_width;
 	u32 ppr = dp_mode->timing.pixel_clk_khz/1000;
+	int max_slice_width;
 
 	comp_info->dsc_info.slice_per_pkt = 0;
 	for (i = 0; i < ARRAY_SIZE(slice_per_line_tbl); i++) {
 		rec = &slice_per_line_tbl[i];
 		if ((ppr > rec->min_ppr) && (ppr <= rec->max_ppr)) {
 			comp_info->dsc_info.slice_per_pkt = rec->num_slices;
+			i++;
 			break;
 		}
 	}
@@ -1525,8 +1527,20 @@ static int dp_panel_dsc_prepare_basic_params(
 	if (comp_info->dsc_info.slice_per_pkt == 0)
 		return -EINVAL;
 
+	max_slice_width = dp_panel->dsc_dpcd[12] * 320;
 	slice_width = (dp_mode->timing.h_active /
 				comp_info->dsc_info.slice_per_pkt);
+
+	while (slice_width >= max_slice_width) {
+		if (i == ARRAY_SIZE(slice_per_line_tbl))
+			return -EINVAL;
+
+		rec = &slice_per_line_tbl[i];
+		comp_info->dsc_info.slice_per_pkt = rec->num_slices;
+		slice_width = (dp_mode->timing.h_active /
+				comp_info->dsc_info.slice_per_pkt);
+		i++;
+	}
 
 	comp_info->dsc_info.block_pred_enable =
 			dp_panel->sink_dsc_caps.block_pred_en;
@@ -1564,7 +1578,6 @@ static int dp_panel_read_dpcd(struct dp_panel *dp_panel, bool multi_func)
 	struct drm_dp_aux *drm_aux;
 	u8 *dpcd, rx_feature, temp;
 	u32 dfp_count = 0, offset = DP_DPCD_REV;
-	unsigned long caps = DP_LINK_CAP_ENHANCED_FRAMING;
 
 	if (!dp_panel) {
 		pr_err("invalid input\n");
@@ -1633,27 +1646,25 @@ static int dp_panel_read_dpcd(struct dp_panel *dp_panel, bool multi_func)
 		panel->vscext_chaining_supported);
 
 skip_dpcd_read:
-	link_info->revision = dp_panel->dpcd[DP_DPCD_REV];
-
+	link_info->revision = dpcd[DP_DPCD_REV];
 	panel->major = (link_info->revision >> 4) & 0x0f;
 	panel->minor = link_info->revision & 0x0f;
-	pr_debug("version: %d.%d\n", panel->major, panel->minor);
 
+	/* override link params updated in dp_panel_init_panel_info */
 	link_info->rate = min_t(unsigned long, panel->parser->max_lclk_khz,
-		drm_dp_bw_code_to_link_rate(dp_panel->dpcd[DP_MAX_LINK_RATE]));
-	pr_debug("link_rate=%d\n", link_info->rate);
+			drm_dp_bw_code_to_link_rate(dpcd[DP_MAX_LINK_RATE]));
 
-	link_info->num_lanes = dp_panel->dpcd[DP_MAX_LANE_COUNT] &
+	link_info->num_lanes = dpcd[DP_MAX_LANE_COUNT] &
 				DP_MAX_LANE_COUNT_MASK;
-
 	if (multi_func)
 		link_info->num_lanes = min_t(unsigned int,
 			link_info->num_lanes, 2);
 
-	pr_debug("lane_count=%d\n", link_info->num_lanes);
+	pr_debug("version:%d.%d, rate:%d, lanes:%d\n", panel->major,
+		panel->minor, link_info->rate, link_info->num_lanes);
 
 	if (drm_dp_enhanced_frame_cap(dpcd))
-		link_info->capabilities |= caps;
+		link_info->capabilities |= DP_LINK_CAP_ENHANCED_FRAMING;
 
 	dfp_count = dpcd[DP_DOWN_STREAM_PORT_COUNT] &
 						DP_DOWN_STREAM_PORT_COUNT;
@@ -2287,13 +2298,14 @@ static void dp_panel_edid_deregister(struct dp_panel_private *panel)
 
 static int dp_panel_set_stream_info(struct dp_panel *dp_panel,
 		enum dp_stream_id stream_id, u32 ch_start_slot,
-			u32 ch_tot_slots, u32 pbn)
+			u32 ch_tot_slots, u32 pbn, int vcpi)
 {
 	if (!dp_panel || stream_id > DP_STREAM_MAX) {
 		pr_err("invalid input. stream_id: %d\n", stream_id);
 		return -EINVAL;
 	}
 
+	dp_panel->vcpi = vcpi;
 	dp_panel->stream_id = stream_id;
 	dp_panel->channel_start_slot = ch_start_slot;
 	dp_panel->channel_total_slots = ch_tot_slots;
@@ -2317,19 +2329,16 @@ static int dp_panel_init_panel_info(struct dp_panel *dp_panel)
 	panel = container_of(dp_panel, struct dp_panel_private, dp_panel);
 	pinfo = &dp_panel->pinfo;
 
+	drm_dp_dpcd_writeb(panel->aux->drm_aux, DP_SET_POWER, DP_SET_POWER_D0);
+
 	/*
-	 * print resolution info as this is a result
-	 * of user initiated action of cable connection
-	 */
-	pr_info("DP RESOLUTION: active(back|front|width|low)\n");
-	pr_info("%d(%d|%d|%d|%d)x%d(%d|%d|%d|%d)@%dfps %dbpp %dKhz %dLR %dLn\n",
-		pinfo->h_active, pinfo->h_back_porch, pinfo->h_front_porch,
-		pinfo->h_sync_width, pinfo->h_active_low,
-		pinfo->v_active, pinfo->v_back_porch, pinfo->v_front_porch,
-		pinfo->v_sync_width, pinfo->v_active_low,
-		pinfo->refresh_rate, pinfo->bpp, pinfo->pixel_clk_khz,
-		panel->link->link_params.bw_code,
-		panel->link->link_params.lane_count);
+	* According to the DP 1.1 specification, a "Sink Device must exit the
+	* power saving state within 1 ms" (Section 2.5.3.1, Table 5-52, "Sink
+	* Control Field" (register 0x600).
+	*/
+	usleep_range(1000, 2000);
+
+	drm_dp_link_probe(panel->aux->drm_aux, &dp_panel->link_info);
 end:
 	return rc;
 }
@@ -2358,7 +2367,7 @@ static int dp_panel_deinit_panel_info(struct dp_panel *dp_panel, u32 flags)
 	if (!panel->custom_edid && dp_panel->edid_ctrl->edid)
 		sde_free_edid((void **)&dp_panel->edid_ctrl);
 
-	dp_panel_set_stream_info(dp_panel, DP_STREAM_MAX, 0, 0, 0);
+	dp_panel_set_stream_info(dp_panel, DP_STREAM_MAX, 0, 0, 0, 0);
 	memset(&dp_panel->pinfo, 0, sizeof(dp_panel->pinfo));
 	memset(&hdr->hdr_meta, 0, sizeof(hdr->hdr_meta));
 	panel->panel_on = false;
@@ -2576,47 +2585,41 @@ static void dp_panel_config_misc(struct dp_panel *dp_panel)
 	catalog->config_misc(catalog);
 }
 
-static bool dp_panel_use_fixed_nvid(struct dp_panel *dp_panel)
-{
-	u8 *dpcd = dp_panel->dpcd;
-	struct sde_connector *c_conn = to_sde_connector(dp_panel->connector);
-
-	/* use fixe mvid and nvid for MST streams */
-	if (c_conn->mst_port)
-		return true;
-
-	/*
-	 * For better interop experience, used a fixed NVID=0x8000
-	 * whenever connected to a VGA dongle downstream.
-	 */
-	if (dpcd[DP_DOWNSTREAMPORT_PRESENT] & DP_DWN_STRM_PORT_PRESENT) {
-		u8 type = dpcd[DP_DOWNSTREAMPORT_PRESENT] &
-			DP_DWN_STRM_PORT_TYPE_MASK;
-		if (type == DP_DWN_STRM_PORT_TYPE_ANALOG)
-			return true;
-	}
-
-	return false;
-}
-
 static void dp_panel_config_msa(struct dp_panel *dp_panel)
 {
 	struct dp_panel_private *panel;
 	struct dp_catalog_panel *catalog;
 	u32 rate;
 	u32 stream_rate_khz;
-	bool fixed_nvid;
 
 	panel = container_of(dp_panel, struct dp_panel_private, dp_panel);
 	catalog = panel->catalog;
 
 	catalog->widebus_en = dp_panel->widebus_en;
 
-	fixed_nvid = dp_panel_use_fixed_nvid(dp_panel);
 	rate = drm_dp_bw_code_to_link_rate(panel->link->link_params.bw_code);
 	stream_rate_khz = dp_panel->pinfo.pixel_clk_khz;
 
-	catalog->config_msa(catalog, rate, stream_rate_khz, fixed_nvid);
+	catalog->config_msa(catalog, rate, stream_rate_khz);
+}
+
+static void dp_panel_resolution_info(struct dp_panel_private *panel)
+{
+	struct dp_panel_info *pinfo = &panel->dp_panel.pinfo;
+
+	/*
+	 * print resolution info as this is a result
+	 * of user initiated action of cable connection
+	 */
+	pr_info("DP RESOLUTION: active(back|front|width|low)\n");
+	pr_info("%d(%d|%d|%d|%d)x%d(%d|%d|%d|%d)@%dfps %dbpp %dKhz %dLR %dLn\n",
+		pinfo->h_active, pinfo->h_back_porch, pinfo->h_front_porch,
+		pinfo->h_sync_width, pinfo->h_active_low,
+		pinfo->v_active, pinfo->v_back_porch, pinfo->v_front_porch,
+		pinfo->v_sync_width, pinfo->v_active_low,
+		pinfo->refresh_rate, pinfo->bpp, pinfo->pixel_clk_khz,
+		panel->link->link_params.bw_code,
+		panel->link->link_params.lane_count);
 }
 
 static int dp_panel_hw_cfg(struct dp_panel *dp_panel, bool enable)
@@ -2643,6 +2646,7 @@ static int dp_panel_hw_cfg(struct dp_panel *dp_panel, bool enable)
 		dp_panel_config_dsc(dp_panel, enable);
 		dp_panel_config_tr_unit(dp_panel);
 		dp_panel_config_timing(dp_panel);
+		dp_panel_resolution_info(panel);
 	}
 
 	panel->catalog->config_dto(panel->catalog, !enable);
@@ -2831,6 +2835,8 @@ struct dp_panel *dp_panel_get(struct dp_panel_in *in)
 	if (in->base_panel) {
 		memcpy(dp_panel->dpcd, in->base_panel->dpcd,
 				DP_RECEIVER_CAP_SIZE + 1);
+		memcpy(dp_panel->dsc_dpcd, in->base_panel->dsc_dpcd,
+				DP_RECEIVER_DSC_CAP_SIZE + 1);
 		memcpy(&dp_panel->link_info, &in->base_panel->link_info,
 				sizeof(dp_panel->link_info));
 		dp_panel->mst_state = in->base_panel->mst_state;

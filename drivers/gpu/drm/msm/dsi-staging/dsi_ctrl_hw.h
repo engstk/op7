@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,6 +36,7 @@
  * @DSI_CTRL_VERSION_2_0:     DSI host v2.0 controller
  * @DSI_CTRL_VERSION_2_2:     DSI host v2.2 controller
  * @DSI_CTRL_VERSION_2_3:     DSI host v2.3 controller
+ * @DSI_CTRL_VERSION_2_4:     DSI host v2.4 controller
  * @DSI_CTRL_VERSION_MAX:     max version
  */
 enum dsi_ctrl_version {
@@ -44,6 +45,7 @@ enum dsi_ctrl_version {
 	DSI_CTRL_VERSION_2_0,
 	DSI_CTRL_VERSION_2_2,
 	DSI_CTRL_VERSION_2_3,
+	DSI_CTRL_VERSION_2_4,
 	DSI_CTRL_VERSION_MAX
 };
 
@@ -829,6 +831,19 @@ struct dsi_ctrl_hw_ops {
 	 * @enable:	  Bool to control continuous clock request.
 	 */
 	void (*set_continuous_clk)(struct dsi_ctrl_hw *ctrl, bool enable);
+
+	/**
+	 * hw.ops.wait4dynamic_refresh_done() - Wait for dynamic refresh done
+	 * @ctrl:         Pointer to the controller host hardware.
+	 */
+	int (*wait4dynamic_refresh_done)(struct dsi_ctrl_hw *ctrl);
+
+	/**
+	 * hw.ops.hs_req_sel() - enable continuous clk support through phy
+	 * @ctrl:	Pointer to the controller host hardware.
+	 * @sel_phy:	Bool to control whether to select phy or controller
+	 */
+	void (*hs_req_sel)(struct dsi_ctrl_hw *ctrl, bool sel_phy);
 };
 
 /*

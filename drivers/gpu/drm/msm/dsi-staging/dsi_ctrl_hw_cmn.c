@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -310,7 +310,7 @@ void dsi_ctrl_hw_cmn_set_video_timing(struct dsi_ctrl_hw *ctrl,
 		reg |= 1;
 		DSI_W32(ctrl, DSI_VIDEO_COMPRESSION_MODE_CTRL, reg);
 	} else {
-		width = mode->h_active;
+		width = mode->h_active + mode->overlap_pixels;
 	}
 
 	hs_end = mode->h_sync_width;
@@ -421,8 +421,8 @@ void dsi_ctrl_hw_cmn_setup_cmd_stream(struct dsi_ctrl_hw *ctrl,
 		stride_final = roi->w * 3;
 		height_final = roi->h;
 	} else {
-		width_final = mode->h_active;
-		stride_final = h_stride;
+		width_final = mode->h_active + mode->overlap_pixels;
+		stride_final = h_stride + mode->overlap_pixels * 3;
 		height_final = mode->v_active;
 	}
 
@@ -1516,6 +1516,13 @@ void dsi_ctrl_hw_cmn_mask_error_intr(struct dsi_ctrl_hw *ctrl, u32 idx, bool en)
 		}
 	}
 
+	if (idx & BIT(DSI_PLL_UNLOCK_ERR)) {
+		if (en)
+			reg |= BIT(28);
+		else
+			reg &= ~BIT(28);
+	}
+
 	DSI_W32(ctrl, 0x10c, reg);
 	wmb(); /* ensure error is masked */
 }
@@ -1570,6 +1577,19 @@ int dsi_ctrl_hw_cmn_wait_for_cmd_mode_mdp_idle(struct dsi_ctrl_hw *ctrl)
 	return rc;
 }
 
+void dsi_ctrl_hw_cmn_hs_req_sel(struct dsi_ctrl_hw *ctrl, bool sel_phy)
+{
+	u32 reg = 0;
+
+	reg = DSI_R32(ctrl, DSI_LANE_CTRL);
+	if (sel_phy)
+		reg &= ~BIT(24);
+	else
+		reg |= BIT(24);
+	DSI_W32(ctrl, DSI_LANE_CTRL, reg);
+	wmb(); /* make sure request is set */
+}
+
 void dsi_ctrl_hw_cmn_set_continuous_clk(struct dsi_ctrl_hw *ctrl, bool enable)
 {
 	u32 reg = 0;
@@ -1581,4 +1601,26 @@ void dsi_ctrl_hw_cmn_set_continuous_clk(struct dsi_ctrl_hw *ctrl, bool enable)
 		reg &= ~BIT(28);
 	DSI_W32(ctrl, DSI_LANE_CTRL, reg);
 	wmb(); /* make sure request is set */
+}
+
+int dsi_ctrl_hw_cmn_wait4dynamic_refresh_done(struct dsi_ctrl_hw *ctrl)
+{
+	int rc;
+	u32 const sleep_us = 1000;
+	u32 const timeout_us = 84000; /* approximately 5 vsyncs */
+	u32 reg = 0, dyn_refresh_done = BIT(28);
+
+	rc = readl_poll_timeout(ctrl->base + DSI_INT_CTRL, reg,
+				(reg & dyn_refresh_done), sleep_us, timeout_us);
+	if (rc) {
+		pr_err("wait4dynamic refresh timedout %d\n", rc);
+		return rc;
+	}
+
+	/* ack dynamic refresh done status */
+	reg = DSI_R32(ctrl, DSI_INT_CTRL);
+	reg |= dyn_refresh_done;
+	DSI_W32(ctrl, DSI_INT_CTRL, reg);
+
+	return 0;
 }

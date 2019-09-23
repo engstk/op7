@@ -1,4 +1,4 @@
- /* Copyright (c) 2018, The Linux Foundation.All rights reserved.
+ /* Copyright (c) 2018-2019, The Linux Foundation.All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -46,6 +46,7 @@
 		i2c1 = &qupv3_se1_i2c;
 		i2c2 = &qupv3_se3_i2c;
 		hsuart0 = &qupv3_se7_4uart;
+		hsuart1 = &qupv3_se4_2uart;
 		swr0 = &swr0;
 		swr1 = &swr1;
 		swr2 = &swr2;
@@ -498,7 +499,7 @@
 		};
 	};
 
-	reserved-memory {
+	reserved_memory: reserved-memory {
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
@@ -596,7 +597,7 @@
 		cdsp_sec_mem: cdsp_sec_regions@0x9f800000 {
 			compatible = "removed-dma-pool";
 			no-map;
-			reg = <0x0 0x9f800000 0x0 0xc00000>;
+			reg = <0x0 0x9f800000 0x0 0x1e00000>;
 		};
 
 		adsp_mem: adsp_region {
@@ -640,8 +641,18 @@
 		};
 
 		cont_splash_memory: cont_splash_region@9c000000 {
-			reg = <0x0 0x9c000000 0x0 0x02400000>;
+			reg = <0x0 0x9c000000 0x0 0x01000000>;
 			label = "cont_splash_region";
+		};
+
+		dfps_data_memory: dfps_data_region@9e300000 {
+			reg = <0x0 0x9cf00000 0x0 0x0100000>;
+			label = "dfps_data_region";
+		};
+
+		disp_rdump_memory: disp_rdump_region@9c000000 {
+			reg = <0x0 0x9c000000 0x0 0x01000000>;
+			label = "disp_rdump_region";
 		};
 
 		dump_mem: mem_dump_region {
@@ -812,6 +823,13 @@
 		reg-names = "cc_base";
 		vdd_cx-supply = <&VDD_CX_LEVEL>;
 		vdd_cx_ao-supply = <&VDD_CX_LEVEL_AO>;
+		protected-clocks = <GCC_SDR_CORE_CLK>,
+				<GCC_SDR_WR0_MEM_CLK>,
+				<GCC_SDR_WR1_MEM_CLK>,
+				<GCC_SDR_WR2_MEM_CLK>,
+				<GCC_SDR_CSR_HCLK>,
+				<GCC_SDR_PRI_MI2S_CLK>,
+				<GCC_SDR_SEC_MI2S_CLK>;
 		#clock-cells = <1>;
 		#reset-cells = <1>;
 	};
@@ -1356,8 +1374,6 @@
 
 		qcom,llcc-erp {
 			compatible = "qcom,llcc-erp";
-			interrupt-names = "ecc_irq";
-			interrupts = <GIC_SPI 582 IRQ_TYPE_LEVEL_HIGH>;
 		};
 
 		qcom,llcc-amon {
@@ -1456,6 +1472,9 @@
 
 		qcom,ice-clk-rates = <300000000 75000000>;
 
+		/* DLL HSR settings. Refer go/hsr - <Target> DLL settings */
+		qcom,dll-hsr-list = <0x000F642C 0x0 0x0 0x00010800 0x80040868>;
+
 		qcom,nonremovable;
 		status = "disabled";
 	};
@@ -1517,6 +1536,9 @@
 		clocks = <&clock_gcc GCC_SDCC2_AHB_CLK>,
 			<&clock_gcc GCC_SDCC2_APPS_CLK>;
 		clock-names = "iface_clk", "core_clk";
+
+		/* DLL HSR settings. Refer go/hsr - <Target> DLL settings */
+		qcom,dll-hsr-list = <0x0007642C 0x0 0x0 0x00010800 0x80040868>;
 
 		status = "disabled";
 	};
@@ -2528,6 +2550,7 @@
 		qcom,smmu-fast-map;
 		qcom,use-ipa-pm;
 		qcom,bandwidth-vote-for-ipa;
+		qcom,ipa-endp-delay-wa;
 		qcom,msm-bus,name = "ipa";
 		qcom,msm-bus,num-cases = <5>;
 		qcom,msm-bus,num-paths = <4>;
@@ -2649,6 +2672,7 @@
 		reg = <0x0 0x200000>;
 		reg-names = "rmtfs";
 		qcom,client-id = <0x00000001>;
+		qcom,guard-memory;
 	};
 
 	llcc_pmu: llcc-pmu@90cc000 {

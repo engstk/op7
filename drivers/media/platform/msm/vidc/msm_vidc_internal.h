@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,6 +34,7 @@
 #include "msm_vidc.h"
 #include <media/msm_media_info.h>
 #include "vidc_hfi_api.h"
+#include <linux/timer.h>
 
 #define MSM_VIDC_DRV_NAME "msm_vidc_driver"
 #define MSM_VIDC_VERSION KERNEL_VERSION(0, 0, 1)
@@ -158,6 +159,14 @@ struct vidc_input_cr_data {
 	u32 input_cr;
 };
 
+struct vidc_tag_data {
+	struct list_head list;
+	u32 index;
+	u32 type;
+	u32 input_tag;
+	u32 output_tag;
+};
+
 struct recon_buf {
 	struct list_head list;
 	u32 buffer_index;
@@ -189,6 +198,7 @@ struct msm_vidc_buf_data {
 	u32 index;
 	u32 mark_data;
 	u32 mark_target;
+	u32 filled_length;
 };
 
 struct msm_vidc_common_data {
@@ -241,9 +251,9 @@ struct msm_vidc_platform_data {
 	struct msm_vidc_csc_coeff csc_data;
 	struct msm_vidc_efuse_data *efuse_data;
 	unsigned int efuse_data_length;
+	struct msm_vidc_ubwc_config *ubwc_config;
+	unsigned int ubwc_config_length;
 	unsigned int sku_version;
-	phys_addr_t gcc_register_base;
-	uint32_t gcc_register_size;
 	uint32_t vpu_ver;
 };
 
@@ -431,6 +441,7 @@ struct msm_vidc_inst {
 	struct buf_queue bufq[MAX_PORT_NUM];
 	struct msm_vidc_list freqs;
 	struct msm_vidc_list input_crs;
+	struct msm_vidc_list buffer_tags;
 	struct msm_vidc_list scratchbufs;
 	struct msm_vidc_list persistbufs;
 	struct msm_vidc_list pending_getpropq;
@@ -474,6 +485,9 @@ struct msm_vidc_inst {
 	struct msm_vidc_codec_data *codec_data;
 	struct hal_hdr10_pq_sei hdr10_sei_params;
 	struct batch_mode batch;
+	struct timer_list batch_timer;
+	struct work_struct batch_work;
+	bool decode_batching;
 };
 
 extern struct msm_vidc_drv *vidc_driver;
@@ -491,7 +505,7 @@ struct msm_vidc_ctrl {
 	s64 maximum;
 	s64 default_value;
 	u32 step;
-	u32 menu_skip_mask;
+	u64 menu_skip_mask;
 	u32 flags;
 	const char * const *qmenu;
 };
@@ -499,6 +513,7 @@ struct msm_vidc_ctrl {
 void handle_cmd_response(enum hal_command_response cmd, void *data);
 int msm_vidc_trigger_ssr(struct msm_vidc_core *core,
 	enum hal_ssr_trigger_type type);
+int msm_vidc_freeze_core(struct msm_vidc_core *core);
 int msm_vidc_noc_error_info(struct msm_vidc_core *core);
 bool heic_encode_session_supported(struct msm_vidc_inst *inst);
 int msm_vidc_check_session_supported(struct msm_vidc_inst *inst);
@@ -517,6 +532,7 @@ struct msm_vidc_buffer {
 	struct msm_smem smem[VIDEO_MAX_PLANES];
 	struct vb2_v4l2_buffer vvb;
 	enum msm_vidc_flags flags;
+	u32 output_tag;
 };
 
 struct msm_vidc_cvp_buffer {

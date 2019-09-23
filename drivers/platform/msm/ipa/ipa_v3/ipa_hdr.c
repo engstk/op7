@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,6 +31,7 @@ static const u32 ipa_hdr_proc_ctx_bin_sz[IPA_HDR_PROC_CTX_BIN_MAX] = { 32, 64};
 static int ipa3_generate_hdr_hw_tbl(struct ipa_mem_buffer *mem)
 {
 	struct ipa3_hdr_entry *entry;
+	gfp_t flag = GFP_KERNEL;
 
 	mem->size = ipa3_ctx->hdr_tbl.end;
 
@@ -40,9 +41,14 @@ static int ipa3_generate_hdr_hw_tbl(struct ipa_mem_buffer *mem)
 	}
 	IPADBG_LOW("tbl_sz=%d\n", ipa3_ctx->hdr_tbl.end);
 
+alloc:
 	mem->base = dma_alloc_coherent(ipa3_ctx->pdev, mem->size,
-			&mem->phys_base, GFP_KERNEL);
+			&mem->phys_base, flag);
 	if (!mem->base) {
+		if (flag == GFP_KERNEL) {
+			flag = GFP_ATOMIC;
+			goto alloc;
+		}
 		IPAERR("fail to alloc DMA buff of size %d\n", mem->size);
 		return -ENOMEM;
 	}
@@ -62,7 +68,7 @@ static int ipa3_generate_hdr_hw_tbl(struct ipa_mem_buffer *mem)
 }
 
 static int ipa3_hdr_proc_ctx_to_hw_format(struct ipa_mem_buffer *mem,
-	u32 hdr_base_addr)
+	u64 hdr_base_addr)
 {
 	struct ipa3_hdr_proc_ctx_entry *entry;
 	int ret;
@@ -100,7 +106,8 @@ static int ipa3_hdr_proc_ctx_to_hw_format(struct ipa_mem_buffer *mem,
 				entry->hdr->phys_base,
 				hdr_base_addr,
 				entry->hdr->offset_entry,
-				entry->l2tp_params);
+				entry->l2tp_params,
+				ipa3_ctx->use_64_bit_dma_mask);
 		if (ret)
 			return ret;
 	}
@@ -117,10 +124,10 @@ static int ipa3_hdr_proc_ctx_to_hw_format(struct ipa_mem_buffer *mem,
  *
  * Returns:	0 on success, negative on failure
  */
-static int ipa3_generate_hdr_proc_ctx_hw_tbl(u32 hdr_sys_addr,
+static int ipa3_generate_hdr_proc_ctx_hw_tbl(u64 hdr_sys_addr,
 	struct ipa_mem_buffer *mem, struct ipa_mem_buffer *aligned_mem)
 {
-	u32 hdr_base_addr;
+	u64 hdr_base_addr;
 
 	mem->size = (ipa3_ctx->hdr_proc_ctx_tbl.end) ? : 4;
 

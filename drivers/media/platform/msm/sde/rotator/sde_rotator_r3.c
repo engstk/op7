@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,6 +34,7 @@
 #include "sde_rotator_r3_debug.h"
 #include "sde_rotator_trace.h"
 #include "sde_rotator_debug.h"
+#include "sde_rotator_vbif.h"
 
 #define RES_UHD              (3840*2160)
 #define MS_TO_US(t) ((t) * USEC_PER_MSEC)
@@ -42,10 +43,6 @@
 #define TRAFFIC_SHAPE_CLKTICK_14MS   268800
 #define TRAFFIC_SHAPE_CLKTICK_12MS   230400
 #define TRAFFIC_SHAPE_VSYNC_CLK      19200000
-
-/* XIN mapping */
-#define XIN_SSPP		0
-#define XIN_WRITEBACK		1
 
 /* wait for at most 2 vsync for lowest refresh rate (24hz) */
 #define KOFF_TIMEOUT		(42 * 8)
@@ -973,23 +970,29 @@ static int sde_hw_rotator_enable_irq(struct sde_hw_rotator *rot)
 	return ret;
 }
 
-static void sde_hw_rotator_halt_vbif_xin_client(void)
+static int sde_hw_rotator_halt_vbif_xin_client(void)
 {
 	struct sde_mdp_vbif_halt_params halt_params;
+	int rc = 0;
+	struct sde_rot_data_type *mdata = sde_rot_get_mdata();
 
 	memset(&halt_params, 0, sizeof(struct sde_mdp_vbif_halt_params));
-	halt_params.xin_id = XIN_SSPP;
+	halt_params.xin_id = mdata->vbif_xin_id[XIN_SSPP];
 	halt_params.reg_off_mdp_clk_ctrl = MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0;
 	halt_params.bit_off_mdp_clk_ctrl =
 		MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0_XIN0;
 	sde_mdp_halt_vbif_xin(&halt_params);
+	rc |=  halt_params.xin_timeout;
 
 	memset(&halt_params, 0, sizeof(struct sde_mdp_vbif_halt_params));
-	halt_params.xin_id = XIN_WRITEBACK;
+	halt_params.xin_id = mdata->vbif_xin_id[XIN_WRITEBACK];
 	halt_params.reg_off_mdp_clk_ctrl = MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0;
 	halt_params.bit_off_mdp_clk_ctrl =
 		MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0_XIN1;
 	sde_mdp_halt_vbif_xin(&halt_params);
+	rc |=  halt_params.xin_timeout;
+
+	return rc;
 }
 
 /**
@@ -1248,6 +1251,47 @@ static void sde_hw_rotator_unmap_vaddr(struct sde_dbg_buf *dbgbuf)
 	dbgbuf->buflen = 0;
 	dbgbuf->width  = 0;
 	dbgbuf->height = 0;
+}
+
+static void sde_hw_rotator_vbif_rt_setting(void)
+{
+	u32 reg_high, reg_shift, reg_val, reg_val_lvl, mask, vbif_qos;
+	struct sde_rot_data_type *mdata = sde_rot_get_mdata();
+	int i, j;
+
+	vbif_lock(mdata->parent_pdev);
+
+	for (i = 0; i < mdata->npriority_lvl; i++) {
+		for (j = 0; j < MAX_XIN; j++) {
+			reg_high = ((mdata->vbif_xin_id[j]
+						& 0x8) >> 3) * 4 + (i * 8);
+			reg_shift = mdata->vbif_xin_id[j] * 4;
+
+			reg_val = SDE_VBIF_READ(mdata,
+			MMSS_VBIF_NRT_VBIF_QOS_RP_REMAP_000 + reg_high);
+			reg_val_lvl = SDE_VBIF_READ(mdata,
+			MMSS_VBIF_NRT_VBIF_QOS_LVL_REMAP_000 + reg_high);
+
+			mask = 0x7 << (mdata->vbif_xin_id[j] * 4);
+
+			vbif_qos = mdata->vbif_nrt_qos[i];
+
+			reg_val &= ~mask;
+			reg_val |= (vbif_qos << reg_shift) & mask;
+
+			reg_val_lvl &= ~mask;
+			reg_val_lvl |= (vbif_qos << reg_shift) & mask;
+
+			SDE_VBIF_WRITE(mdata,
+				MMSS_VBIF_NRT_VBIF_QOS_RP_REMAP_000 + reg_high,
+					reg_val);
+			SDE_VBIF_WRITE(mdata,
+				MMSS_VBIF_NRT_VBIF_QOS_LVL_REMAP_000 + reg_high,
+					reg_val_lvl);
+		}
+	}
+
+	vbif_unlock(mdata->parent_pdev);
 }
 
 /*
@@ -2306,7 +2350,10 @@ static u32 sde_hw_rotator_wait_done_regdma(
 					__sde_hw_rotator_get_timestamp(rot,
 					ROT_QUEUE_LOW_PRIORITY);
 
-			if (ubwcerr || abort) {
+			spin_unlock_irqrestore(&rot->rotisr_lock, flags);
+
+			if (ubwcerr || abort ||
+					sde_hw_rotator_halt_vbif_xin_client()) {
 				/*
 				 * Perform recovery for ROT SSPP UBWC decode
 				 * error.
@@ -2314,16 +2361,15 @@ static u32 sde_hw_rotator_wait_done_regdma(
 				 * - reset TS logic so all pending rotation
 				 *   in hw queue got done signalled
 				 */
-				spin_unlock_irqrestore(&rot->rotisr_lock,
-						flags);
 				if (!sde_hw_rotator_reset(rot, ctx))
 					status = REGDMA_INCOMPLETE_CMD;
 				else
 					status = ROT_ERROR_BIT;
-				spin_lock_irqsave(&rot->rotisr_lock, flags);
 			} else {
 				status = ROT_ERROR_BIT;
 			}
+
+			spin_lock_irqsave(&rot->rotisr_lock, flags);
 		} else {
 			if (rc == 1)
 				SDEROT_WARN(
@@ -3038,7 +3084,7 @@ static int sde_hw_rotator_config(struct sde_rot_hw_resource *hw,
 		struct sde_mdp_set_ot_params ot_params;
 
 		memset(&ot_params, 0, sizeof(struct sde_mdp_set_ot_params));
-		ot_params.xin_id = XIN_SSPP;
+		ot_params.xin_id = mdata->vbif_xin_id[XIN_SSPP];
 		ot_params.num = 0; /* not used */
 		ot_params.width = entry->perf->config.input.width;
 		ot_params.height = entry->perf->config.input.height;
@@ -3060,7 +3106,7 @@ static int sde_hw_rotator_config(struct sde_rot_hw_resource *hw,
 		struct sde_mdp_set_ot_params ot_params;
 
 		memset(&ot_params, 0, sizeof(struct sde_mdp_set_ot_params));
-		ot_params.xin_id = XIN_WRITEBACK;
+		ot_params.xin_id = mdata->vbif_xin_id[XIN_WRITEBACK];
 		ot_params.num = 0; /* not used */
 		ot_params.width = entry->perf->config.input.width;
 		ot_params.height = entry->perf->config.input.height;
@@ -3081,15 +3127,20 @@ static int sde_hw_rotator_config(struct sde_rot_hw_resource *hw,
 	if (test_bit(SDE_QOS_PER_PIPE_LUT, mdata->sde_qos_map))	{
 		u32 qos_lut = 0; /* low priority for nrt read client */
 
-		trace_rot_perf_set_qos_luts(XIN_SSPP, sspp_cfg.fmt->format,
-			qos_lut, sde_mdp_is_linear_format(sspp_cfg.fmt));
+		trace_rot_perf_set_qos_luts(mdata->vbif_xin_id[XIN_SSPP],
+			sspp_cfg.fmt->format, qos_lut,
+			sde_mdp_is_linear_format(sspp_cfg.fmt));
 
 		SDE_ROTREG_WRITE(rot->mdss_base, ROT_SSPP_CREQ_LUT, qos_lut);
 	}
 
 	/* VBIF QoS and other settings */
-	if (!ctx->sbuf_mode)
-		sde_hw_rotator_vbif_setting(rot);
+	if (!ctx->sbuf_mode) {
+		if (mdata->parent_pdev)
+			sde_hw_rotator_vbif_rt_setting();
+		else
+			sde_hw_rotator_vbif_setting(rot);
+	}
 
 	return 0;
 
@@ -3360,6 +3411,24 @@ static int sde_rotator_hw_rev_init(struct sde_hw_rotator *rot)
 				sde_hw_rotator_v4_outpixfmts_sbuf;
 		rot->num_outpixfmt[SDE_ROTATOR_MODE_SBUF] =
 				ARRAY_SIZE(sde_hw_rotator_v4_outpixfmts_sbuf);
+		rot->downscale_caps =
+			"LINEAR/1.5/2/4/8/16/32/64 TILE/1.5/2/4 TP10/1.5/2";
+	} else if (IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+				SDE_MDP_HW_REV_540) ||
+				IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+				SDE_MDP_HW_REV_620)) {
+		SDEROT_DBG("Sys cache inline rotation not supported\n");
+		set_bit(SDE_CAPS_UBWC_2,  mdata->sde_caps_map);
+		set_bit(SDE_CAPS_PARTIALWR,  mdata->sde_caps_map);
+		set_bit(SDE_CAPS_HW_TIMESTAMP, mdata->sde_caps_map);
+		rot->inpixfmts[SDE_ROTATOR_MODE_OFFLINE] =
+				sde_hw_rotator_v4_inpixfmts;
+		rot->num_inpixfmt[SDE_ROTATOR_MODE_OFFLINE] =
+				ARRAY_SIZE(sde_hw_rotator_v4_inpixfmts);
+		rot->outpixfmts[SDE_ROTATOR_MODE_OFFLINE] =
+				sde_hw_rotator_v4_outpixfmts;
+		rot->num_outpixfmt[SDE_ROTATOR_MODE_OFFLINE] =
+				ARRAY_SIZE(sde_hw_rotator_v4_outpixfmts);
 		rot->downscale_caps =
 			"LINEAR/1.5/2/4/8/16/32/64 TILE/1.5/2/4 TP10/1.5/2";
 	} else if (IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,

@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -178,6 +178,13 @@ int msm_vidc_query_ctrl(void *instance, struct v4l2_queryctrl *ctrl)
 		break;
 	case V4L2_CID_MPEG_VIDEO_MULTI_SLICE_MAX_BYTES:
 		msm_vidc_ctrl_get_range(ctrl, &inst->capability.slice_bytes);
+		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_COLOR_SPACE_CAPS:
+		msm_vidc_ctrl_get_range(ctrl,
+			&inst->capability.color_space_caps);
+		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_ROTATION_CAPS:
+		msm_vidc_ctrl_get_range(ctrl, &inst->capability.rotation);
 		break;
 	case V4L2_CID_MPEG_VIDC_VIDEO_FRAME_RATE:
 	case V4L2_CID_MPEG_VIDC_VIDEO_OPERATING_RATE:
@@ -505,6 +512,7 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 	struct msm_vidc_inst *inst = instance;
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
+	struct vidc_tag_data tag_data;
 	u32 cr = 0;
 
 	if (!inst || !inst->core || !b || !valid_v4l2_buffer(b, inst)) {
@@ -531,6 +539,12 @@ int msm_vidc_qbuf(void *instance, struct v4l2_buffer *b)
 			b->m.planes[0].reserved[3], b->m.planes[0].reserved[4]);
 	}
 
+	tag_data.index = b->index;
+	tag_data.type = b->type;
+	tag_data.input_tag = b->m.planes[0].reserved[5];
+	tag_data.output_tag = b->m.planes[0].reserved[6];
+	msm_comm_store_tags(inst, &tag_data);
+
 	q = msm_comm_get_vb2q(inst, b->type);
 	if (!q) {
 		dprintk(VIDC_ERR,
@@ -553,6 +567,7 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 	struct msm_vidc_inst *inst = instance;
 	int rc = 0, i = 0;
 	struct buf_queue *q = NULL;
+	struct vidc_tag_data tag_data;
 
 	if (!inst || !b || !valid_v4l2_buffer(b, inst)) {
 		dprintk(VIDC_ERR, "%s: invalid params, inst %pK\n",
@@ -588,6 +603,13 @@ int msm_vidc_dqbuf(void *instance, struct v4l2_buffer *b)
 			&b->m.planes[0].reserved[3],
 			&b->m.planes[0].reserved[4]);
 	}
+
+	tag_data.index = b->index;
+	tag_data.type = b->type;
+
+	msm_comm_fetch_tags(inst, &tag_data);
+	b->m.planes[0].reserved[5] = tag_data.input_tag;
+	b->m.planes[0].reserved[6] = tag_data.output_tag;
 
 	return rc;
 }
@@ -1071,7 +1093,7 @@ static inline int start_streaming(struct msm_vidc_inst *inst)
 		rc = msm_vidc_set_rotation(inst);
 		if (rc) {
 			dprintk(VIDC_ERR,
-				"Set rotation for encoder failed %pK\n");
+				"Set rotation for encoder failed\n");
 			goto fail_start;
 		}
 	}
@@ -1591,6 +1613,12 @@ int msm_vidc_private(void *vidc_inst, unsigned int cmd,
 	int rc = 0;
 	struct msm_vidc_inst *inst = (struct msm_vidc_inst *)vidc_inst;
 
+	if (cmd != VIDIOC_VIDEO_CMD) {
+		dprintk(VIDC_ERR,
+			"%s: invalid private cmd %#x\n", __func__, cmd);
+		return -ENOIOCTLCMD;
+	}
+
 	if (!inst || !arg) {
 		dprintk(VIDC_ERR, "%s: invalid args\n", __func__);
 		return -EINVAL;
@@ -1608,31 +1636,6 @@ int msm_vidc_private(void *vidc_inst, unsigned int cmd,
 	return rc;
 }
 EXPORT_SYMBOL(msm_vidc_private);
-
-static bool msm_vidc_check_for_inst_overload(struct msm_vidc_core *core)
-{
-	u32 instance_count = 0;
-	u32 secure_instance_count = 0;
-	struct msm_vidc_inst *inst = NULL;
-	bool overload = false;
-
-	mutex_lock(&core->lock);
-	list_for_each_entry(inst, &core->instances, list) {
-		instance_count++;
-		/* This flag is not updated yet for the current instance */
-		if (inst->flags & VIDC_SECURE)
-			secure_instance_count++;
-	}
-	mutex_unlock(&core->lock);
-
-	/* Instance count includes current instance as well. */
-
-	if ((instance_count > core->resources.max_inst_count) ||
-		(secure_instance_count > core->resources.max_secure_inst_count))
-		overload = true;
-	return overload;
-}
-
 static int msm_vidc_try_set_ctrl(void *instance, struct v4l2_ctrl *ctrl)
 {
 	struct msm_vidc_inst *inst = instance;
@@ -1761,6 +1764,15 @@ static int try_get_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		ctrl->val =
 		inst->capability.nal_stream_format.nal_stream_format_supported;
 		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE:
+		if (!inst->core || !inst->core->platform_data)
+			return -EINVAL;
+
+		ctrl->val = (inst->core->platform_data->vpu_ver ==
+				VPU_VERSION_4) ?
+			V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_2BIT :
+			V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_2BYTE;
+		break;
 	default:
 		/*
 		 * Other controls aren't really volatile, shouldn't need to
@@ -1818,6 +1830,16 @@ static const struct v4l2_ctrl_ops msm_vidc_ctrl_ops = {
 	.g_volatile_ctrl = msm_vidc_op_g_volatile_ctrl,
 };
 
+static void batch_timer_callback(unsigned long data)
+{
+	struct msm_vidc_inst *inst = (struct msm_vidc_inst *)data;
+
+	if (!inst->batch.enable)
+		return;
+
+	schedule_work(&inst->batch_work);
+}
+
 void *msm_vidc_open(int core_id, int session_type)
 {
 	struct msm_vidc_inst *inst = NULL;
@@ -1856,6 +1878,7 @@ void *msm_vidc_open(int core_id, int session_type)
 	INIT_MSM_VIDC_LIST(&inst->scratchbufs);
 	INIT_MSM_VIDC_LIST(&inst->freqs);
 	INIT_MSM_VIDC_LIST(&inst->input_crs);
+	INIT_MSM_VIDC_LIST(&inst->buffer_tags);
 	INIT_MSM_VIDC_LIST(&inst->persistbufs);
 	INIT_MSM_VIDC_LIST(&inst->pending_getpropq);
 	INIT_MSM_VIDC_LIST(&inst->outputbufs);
@@ -1876,6 +1899,7 @@ void *msm_vidc_open(int core_id, int session_type)
 	inst->clk_data.ddr_bw = 0;
 	inst->clk_data.sys_cache_bw = 0;
 	inst->clk_data.bitrate = 0;
+	inst->clk_data.work_route = 1;
 	inst->clk_data.core_id = VIDC_CORE_ID_DEFAULT;
 	inst->bit_depth = MSM_VIDC_BIT_DEPTH_8;
 	inst->pic_struct = MSM_VIDC_PIC_STRUCT_PROGRESSIVE;
@@ -1883,7 +1907,6 @@ void *msm_vidc_open(int core_id, int session_type)
 	inst->profile = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE;
 	inst->level = V4L2_MPEG_VIDEO_H264_LEVEL_1_0;
 	inst->entropy_mode = V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CAVLC;
-
 	for (i = SESSION_MSG_INDEX(SESSION_MSG_START);
 		i <= SESSION_MSG_INDEX(SESSION_MSG_END); i++) {
 		init_completion(&inst->completions[i]);
@@ -1933,7 +1956,7 @@ void *msm_vidc_open(int core_id, int session_type)
 	}
 
 	msm_dcvs_try_enable(inst);
-	if (msm_vidc_check_for_inst_overload(core)) {
+	if (msm_comm_check_for_inst_overload(core)) {
 		dprintk(VIDC_ERR,
 			"Instance count reached Max limit, rejecting session");
 		goto fail_init;
@@ -1952,6 +1975,10 @@ void *msm_vidc_open(int core_id, int session_type)
 			goto fail_init;
 		}
 	}
+
+	INIT_WORK(&inst->batch_work, msm_vidc_batch_handler);
+	setup_timer(&inst->batch_timer,
+				batch_timer_callback, (unsigned long)inst);
 
 	return inst;
 fail_init:
@@ -1981,6 +2008,7 @@ fail_bufq_capture:
 	DEINIT_MSM_VIDC_LIST(&inst->eosbufs);
 	DEINIT_MSM_VIDC_LIST(&inst->freqs);
 	DEINIT_MSM_VIDC_LIST(&inst->input_crs);
+	DEINIT_MSM_VIDC_LIST(&inst->buffer_tags);
 	DEINIT_MSM_VIDC_LIST(&inst->etb_data);
 	DEINIT_MSM_VIDC_LIST(&inst->fbd_data);
 
@@ -2032,6 +2060,8 @@ static void msm_vidc_cleanup_instance(struct msm_vidc_inst *inst)
 	}
 	mutex_unlock(&inst->registeredbufs.lock);
 
+	del_timer(&inst->batch_timer);
+
 	msm_comm_free_freq_table(inst);
 
 	msm_comm_free_input_cr_table(inst);
@@ -2051,6 +2081,8 @@ static void msm_vidc_cleanup_instance(struct msm_vidc_inst *inst)
 	if (msm_comm_release_mark_data(inst))
 		dprintk(VIDC_ERR,
 			"Failed to release mark_data buffers\n");
+
+	msm_comm_free_buffer_tags(inst);
 
 	msm_comm_release_eos_buffers(inst);
 

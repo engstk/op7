@@ -45,6 +45,7 @@
 #define DWC3_EP0_SETUP_SIZE	512
 #define DWC3_ENDPOINTS_NUM	32
 #define DWC3_XHCI_RESOURCES_NUM	2
+#define MAX_ERROR_RECOVERY_TRIES	3
 
 #define DWC3_SCRATCHBUF_SIZE	4096	/* each buffer is assumed to be 4KiB */
 #define DWC3_EVENT_BUFFERS_SIZE	4096
@@ -855,8 +856,9 @@ struct dwc3_scratchpad_array {
 #define DWC3_GSI_EVT_BUF_ALLOC			10
 #define DWC3_GSI_EVT_BUF_SETUP			11
 #define DWC3_GSI_EVT_BUF_CLEANUP		12
-#define DWC3_GSI_EVT_BUF_FREE			13
-#define DWC3_CONTROLLER_NOTIFY_CLEAR_DB		14
+#define DWC3_GSI_EVT_BUF_CLEAR			13
+#define DWC3_GSI_EVT_BUF_FREE			14
+#define DWC3_CONTROLLER_NOTIFY_CLEAR_DB		15
 
 #define MAX_INTR_STATS				10
 
@@ -1203,6 +1205,7 @@ struct dwc3 {
 	 * connected devices on PM resume.
 	 */
 	bool			host_poweroff_in_pm_suspend;
+	int			retries_on_error;
 };
 
 #define work_to_dwc(w)		(container_of((w), struct dwc3, drd_work))

@@ -2,7 +2,7 @@
  * drivers/staging/android/ion/ion_system_heap.c
  *
  * Copyright (C) 2011 Google, Inc.
- * Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -116,8 +116,13 @@ void free_buffer_page(struct ion_system_heap *heap,
 			ion_page_pool_free_immediate(pool, page);
 		else
 			ion_page_pool_free(pool, page);
+
+		mod_node_page_state(page_pgdat(page), NR_UNRECLAIMABLE_PAGES,
+				    -(1 << pool->order));
 	} else {
 		__free_pages(page, order);
+		mod_node_page_state(page_pgdat(page), NR_UNRECLAIMABLE_PAGES,
+				    -(1 << order));
 	}
 }
 
@@ -164,6 +169,9 @@ static struct page_info *alloc_from_pool_preferred(
 	struct page_info *info;
 	int i;
 
+	if (buffer->flags & ION_FLAG_POOL_FORCE_ALLOC)
+		goto force_alloc;
+
 	info = kmalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
@@ -195,6 +203,7 @@ static struct page_info *alloc_from_pool_preferred(
 	}
 
 	kfree(info);
+force_alloc:
 	return alloc_largest_available(heap, buffer, size, max_order);
 }
 
@@ -313,6 +322,10 @@ static int ion_system_heap_allocate(struct ion_heap *heap,
 
 		sz = (1 << info->order) * PAGE_SIZE;
 
+		mod_node_page_state(
+				page_pgdat(info->page), NR_UNRECLAIMABLE_PAGES,
+				(1 << (info->order)));
+
 		if (info->from_pool) {
 			list_add_tail(&info->list, &pages_from_pool);
 		} else {
@@ -331,8 +344,10 @@ static int ion_system_heap_allocate(struct ion_heap *heap,
 		goto err;
 
 	table = kzalloc(sizeof(*table), GFP_KERNEL);
-	if (!table)
+	if (!table) {
+		ret = -ENOMEM;
 		goto err_free_data_pages;
+	}
 
 	ret = sg_alloc_table(table, i, GFP_KERNEL);
 	if (ret)

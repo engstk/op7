@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,7 +23,7 @@
 #define CAM_CPAS_AXI_MIN_MNOC_AB_BW   (2048 * 1024)
 #define CAM_CPAS_AXI_MIN_MNOC_IB_BW   (2048 * 1024)
 #define CAM_CPAS_AXI_MIN_CAMNOC_AB_BW (2048 * 1024)
-#define CAM_CPAS_AXI_MIN_CAMNOC_IB_BW (3000000000L)
+#define CAM_CPAS_AXI_MIN_CAMNOC_IB_BW (3000000000UL)
 
 #define CAM_CPAS_GET_CLIENT_IDX(handle) (handle)
 #define CAM_CPAS_GET_CLIENT_HANDLE(indx) (indx)
@@ -149,6 +149,7 @@ struct cam_cpas_bus_client {
  * @camnoc_bus: CAMNOC bus client info for this port
  * @mnoc_bus: MNOC bus client info for this port
  * @axi_port_name: Name of this AXI port
+ * @ib_bw_voting_needed: if this port can update ib bw dynamically
  * @axi_port_node: Node representing this AXI Port
  * @axi_port_mnoc_node: Node representing mnoc in this AXI Port
  * @axi_port_camnoc_node: Node representing camnoc in this AXI Port
@@ -161,6 +162,7 @@ struct cam_cpas_axi_port {
 	struct cam_cpas_bus_client camnoc_bus;
 	struct cam_cpas_bus_client mnoc_bus;
 	const char *axi_port_name;
+	bool ib_bw_voting_needed;
 	struct device_node *axi_port_node;
 	struct device_node *axi_port_mnoc_node;
 	struct device_node *axi_port_camnoc_node;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -200,20 +200,20 @@ static int rgmu_enable_clks(struct kgsl_device *device)
 }
 
 #define CX_GDSC_TIMEOUT	5000	/* ms */
-static int rgmu_disable_gdsc(struct kgsl_device *device)
+static void rgmu_disable_gdsc(struct kgsl_device *device)
 {
 	struct rgmu_device *rgmu = KGSL_RGMU_DEVICE(device);
 	int ret = 0;
 	unsigned long t;
 
 	if (IS_ERR_OR_NULL(rgmu->cx_gdsc))
-		return 0;
+		return;
 
 	ret = regulator_disable(rgmu->cx_gdsc);
 	if (ret) {
 		dev_err(&rgmu->pdev->dev,
 				"Failed to disable CX gdsc:%d\n", ret);
-		return ret;
+		return;
 	}
 
 	/*
@@ -225,17 +225,13 @@ static int rgmu_disable_gdsc(struct kgsl_device *device)
 	t = jiffies + msecs_to_jiffies(CX_GDSC_TIMEOUT);
 	do {
 		if (!regulator_is_enabled(rgmu->cx_gdsc))
-			return 0;
+			return;
 		usleep_range(10, 100);
 
 	} while (!(time_after(jiffies, t)));
 
-	if (!regulator_is_enabled(rgmu->cx_gdsc))
-		return 0;
-
-	dev_err(&rgmu->pdev->dev, "RGMU CX gdsc off timeout\n");
-
-	return -ETIMEDOUT;
+	if (regulator_is_enabled(rgmu->cx_gdsc))
+		dev_err(&rgmu->pdev->dev, "RGMU CX gdsc off timeout\n");
 }
 
 static int rgmu_enable_gdsc(struct rgmu_device *rgmu)
@@ -312,7 +308,6 @@ error:
 	 * that hang recovery is needed to power on GPU
 	 */
 	set_bit(GMU_FAULT, &device->gmu_core.flags);
-	gmu_dev_ops->irq_disable(device);
 	rgmu_snapshot(device);
 }
 
@@ -414,7 +409,8 @@ static int rgmu_suspend(struct kgsl_device *device)
 		return -EINVAL;
 
 	rgmu_disable_clks(device);
-	return rgmu_disable_gdsc(device);
+	rgmu_disable_gdsc(device);
+	return 0;
 }
 
 /* To be called to power on both GPU and RGMU */
@@ -447,7 +443,6 @@ static int rgmu_start(struct kgsl_device *device)
 
 error_rgmu:
 	set_bit(GMU_FAULT, &device->gmu_core.flags);
-	gmu_dev_ops->irq_disable(device);
 	rgmu_snapshot(device);
 	return ret;
 }
@@ -489,4 +484,5 @@ struct gmu_core_ops rgmu_ops = {
 	.dcvs_set = rgmu_dcvs_set,
 	.snapshot = rgmu_snapshot,
 	.regulator_isenabled = rgmu_regulator_isenabled,
+	.suspend = rgmu_suspend,
 };

@@ -337,6 +337,15 @@ config REGULATOR_ISL6271A
 	help
 	  This driver supports ISL6271A voltage regulator chip.
 
+config REGULATOR_PM8008
+	bool "Qualcomm Technologies Inc. PM8008 regulator driver"
+	depends on MFD_I2C_PMIC
+	help
+	  Say Y here to support the PM8008 PMIC chip.
+	  This driver controls PM8008 PMIC chip and the voltage
+	  regulators found in Qualcomm Technologies Inc. PM8008
+	  PMIC.
+
 config REGULATOR_LM363X
 	tristate "TI LM363X voltage regulators"
 	depends on MFD_TI_LMU
@@ -694,6 +703,15 @@ config REGULATOR_QCOM_SPMI
 	  Say M here if you want to include support for the regulators on the
 	  Qualcomm SPMI PMICs as a module. The module will be named
 	  "qcom_spmi-regulator".
+
+config REGULATOR_QPNP_AMOLED
+        tristate "Qualcomm Technologies, Inc. QPNP AMOLED support"
+        depends on SPMI
+        help
+          Supports the OLEDB/AB/IBB module in the Qualcomm Technologies, Inc.
+          QPNP PMICs. Exposes regulators to control the triple power supply
+          positive, negative and bias for the AMOLED display panel. It also
+          allows configurability for the various bias-voltage parameters.
 
 config REGULATOR_QPNP_LABIBB
         tristate "Qualcomm Technologies, Inc. QPNP LAB/IBB regulator support"
@@ -1065,6 +1083,12 @@ config REGULATOR_STUB
 	  when the real hardware based implementation may not be yet available.
 	  Clients can use the real regulator device names with proper
 	  constraint checking while the real driver is being developed.
+
+config VIRTIO_REGULATOR
+	tristate "Virtio regulator driver"
+	depends on VIRTIO
+	---help---
+	  This is the virtual regulator driver for virtio.
 
 endif
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -49,6 +49,9 @@
 #define NPU_MAX_DT_NAME_LEN	    21
 #define NPU_MAX_PWRLEVELS		8
 #define NPU_MAX_STATS_BUF_SIZE 16384
+#define NPU_MAX_PATCH_NUM		160
+
+#define PERF_MODE_DEFAULT 0
 
 enum npu_power_level {
 	NPU_PWRLEVEL_MINSVS = 0,
@@ -153,6 +156,8 @@ struct npu_reg {
  * @uc_pwrlevel - power level from user driver setting
  * @perf_mode_override - perf mode from sysfs to override perf mode
  *                       settings from user driver
+ * @dcvs_mode - dcvs mode from sysfs to turn on dcvs mode
+ *              settings from user driver
  * @devbw - bw device
  */
 struct npu_pwrctrl {
@@ -171,6 +176,8 @@ struct npu_pwrctrl {
 	uint32_t cdsprm_pwrlevel;
 	uint32_t fmax_pwrlevel;
 	uint32_t perf_mode_override;
+	uint32_t dcvs_mode;
+	uint32_t cur_dcvs_activity;
 };
 
 /**
@@ -236,6 +243,8 @@ struct npu_device {
 	struct llcc_slice_desc *sys_cache;
 	uint32_t execute_v2_flag;
 	bool cxlimit_registered;
+
+	uint32_t hw_version;
 };
 
 struct npu_kevent {

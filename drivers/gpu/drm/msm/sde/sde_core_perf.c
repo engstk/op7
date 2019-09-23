@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -214,10 +214,6 @@ int sde_core_perf_crtc_check(struct drm_crtc *crtc,
 		SDE_ERROR("invalid parameters\n");
 		return 0;
 	}
-
-	/* we only need bandwidth check on real-time clients (interfaces) */
-	if (sde_crtc_get_client_type(crtc) == NRT_CLIENT)
-		return 0;
 
 	sde_cstate = to_sde_crtc_state(state);
 
@@ -582,8 +578,8 @@ void sde_core_perf_crtc_update(struct drm_crtc *crtc,
 
 			/* display rsc override during solver mode */
 			if (kms->perf.bw_vote_mode == DISP_RSC_MODE &&
-				get_sde_rsc_current_state(SDE_RSC_INDEX) ==
-						SDE_RSC_CMD_STATE) {
+				get_sde_rsc_current_state(SDE_RSC_INDEX) !=
+						SDE_RSC_CLK_STATE) {
 				/* update new bandwidth in all cases */
 				if (params_changed && ((new->bw_ctl[i] !=
 						old->bw_ctl[i]) ||
@@ -631,6 +627,14 @@ void sde_core_perf_crtc_update(struct drm_crtc *crtc,
 		if (update_bus & BIT(i))
 			_sde_core_perf_crtc_update_bus(kms, crtc, i);
 	}
+
+	if (kms->perf.bw_vote_mode == DISP_RSC_MODE &&
+	    ((get_sde_rsc_current_state(SDE_RSC_INDEX) != SDE_RSC_CLK_STATE
+	      && params_changed) ||
+	    (get_sde_rsc_current_state(SDE_RSC_INDEX) == SDE_RSC_CLK_STATE
+	      && update_bus)))
+		sde_rsc_client_trigger_vote(sde_cstate->rsc_client,
+				update_bus ? true : false);
 
 	/*
 	 * Update the clock after bandwidth vote to ensure

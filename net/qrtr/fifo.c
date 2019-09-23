@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2016, Linaro Ltd
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -199,16 +199,16 @@ static void xprt_read_data(struct qrtr_fifo_xprt *xprtp)
 			break;
 		}
 
+		data = kzalloc(pkt_len, GFP_ATOMIC);
+		if (!data)
+			break;
+
 		rx_avail = fifo_rx_avail(&xprtp->rx_pipe);
 		if (rx_avail < pkt_len) {
 			pr_err("%s Not FULL pkt in FIFO %zu %zu\n",
 			       __func__, rx_avail, pkt_len);
 			break;
 		}
-
-		data = kzalloc(pkt_len, GFP_ATOMIC);
-		if (!data)
-			break;
 
 		fifo_rx_peak(&xprtp->rx_pipe, data, 0, pkt_len);
 		fifo_rx_advance(&xprtp->rx_pipe, pkt_len);
@@ -354,7 +354,7 @@ static int qrtr_fifo_xprt_probe(struct platform_device *pdev)
 	}
 
 	xprtp->ep.xmit = xprt_write;
-	ret = qrtr_endpoint_register(&xprtp->ep, QRTR_EP_NID_AUTO);
+	ret = qrtr_endpoint_register(&xprtp->ep, QRTR_EP_NID_AUTO, false);
 	if (ret)
 		return ret;
 

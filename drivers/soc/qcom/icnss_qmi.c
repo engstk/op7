@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,13 +31,14 @@
 #include <soc/qcom/service-notifier.h>
 #include "wlan_firmware_service_v01.h"
 #include "icnss_private.h"
+#include "icnss_qmi.h"
 
 #ifdef CONFIG_ICNSS_DEBUG
-unsigned long qmi_timeout = 10000;
+unsigned long qmi_timeout = 3000;
 module_param(qmi_timeout, ulong, 0600);
 #define WLFW_TIMEOUT			msecs_to_jiffies(qmi_timeout)
 #else
-#define WLFW_TIMEOUT			msecs_to_jiffies(10000)
+#define WLFW_TIMEOUT			msecs_to_jiffies(3000)
 #endif
 
 #define WLFW_SERVICE_INS_ID_V01		0
@@ -72,6 +73,7 @@ int wlfw_msa_mem_info_send_sync_msg(struct icnss_priv *priv)
 	struct wlfw_msa_info_req_msg_v01 *req;
 	struct wlfw_msa_info_resp_msg_v01 *resp;
 	struct qmi_txn txn;
+	uint64_t max_mapped_addr;
 
 	if (!priv)
 		return -ENODEV;
@@ -133,9 +135,23 @@ int wlfw_msa_mem_info_send_sync_msg(struct icnss_priv *priv)
 		goto out;
 	}
 
+	max_mapped_addr = priv->msa_pa + priv->msa_mem_size;
 	priv->stats.msa_info_resp++;
 	priv->nr_mem_region = resp->mem_region_info_len;
 	for (i = 0; i < resp->mem_region_info_len; i++) {
+
+		if (resp->mem_region_info[i].size > priv->msa_mem_size ||
+		    resp->mem_region_info[i].region_addr > max_mapped_addr ||
+		    resp->mem_region_info[i].region_addr < priv->msa_pa ||
+		    resp->mem_region_info[i].size +
+		    resp->mem_region_info[i].region_addr > max_mapped_addr) {
+			icnss_pr_dbg("Received out of range Addr: 0x%llx Size: 0x%x\n",
+					resp->mem_region_info[i].region_addr,
+					resp->mem_region_info[i].size);
+			ret = -EINVAL;
+			goto fail_unwind;
+		}
+
 		priv->mem_region[i].reg_addr =
 			resp->mem_region_info[i].region_addr;
 		priv->mem_region[i].size =
@@ -152,6 +168,8 @@ int wlfw_msa_mem_info_send_sync_msg(struct icnss_priv *priv)
 	kfree(req);
 	return 0;
 
+fail_unwind:
+	memset(&priv->mem_region[0], 0, sizeof(priv->mem_region[0]) * i);
 out:
 	kfree(resp);
 	kfree(req);
@@ -297,14 +315,23 @@ int wlfw_ind_register_send_sync_msg(struct icnss_priv *priv)
 
 	priv->stats.ind_register_resp++;
 
+	if (resp->fw_status_valid &&
+	   (resp->fw_status & QMI_WLFW_ALREADY_REGISTERED_V01)) {
+		ret = -EALREADY;
+		icnss_pr_dbg("WLFW already registered\n");
+		goto qmi_registered;
+	}
+
 	kfree(resp);
 	kfree(req);
+
 	return 0;
 
 out:
+	priv->stats.ind_register_err++;
+qmi_registered:
 	kfree(resp);
 	kfree(req);
-	priv->stats.ind_register_err++;
 	return ret;
 }
 
@@ -750,6 +777,8 @@ int wlfw_athdiag_read_send_sync_msg(struct icnss_priv *priv,
 			resp->resp.result, resp->resp.error);
 		ret = -resp->resp.result;
 		goto out;
+	} else {
+		ret = 0;
 	}
 
 	if (!resp->data_valid || resp->data_len < data_len) {
@@ -1322,4 +1351,73 @@ int icnss_send_wlan_disable_to_fw(struct icnss_priv *priv)
 	return wlfw_wlan_mode_send_sync_msg(priv, mode);
 }
 
+int icnss_send_vbatt_update(struct icnss_priv *priv, uint64_t voltage_uv)
+{
+	int ret;
+	struct wlfw_vbatt_req_msg_v01 *req;
+	struct wlfw_vbatt_resp_msg_v01 *resp;
+	struct qmi_txn txn;
 
+	if (!priv)
+		return -ENODEV;
+
+	if (test_bit(ICNSS_FW_DOWN, &priv->state))
+		return -EINVAL;
+
+	icnss_pr_dbg("Sending Vbatt message, state: 0x%lx\n", priv->state);
+
+	req = kzalloc(sizeof(*req), GFP_KERNEL);
+	if (!req)
+		return -ENOMEM;
+
+	resp = kzalloc(sizeof(*resp), GFP_KERNEL);
+	if (!resp) {
+		kfree(req);
+		return -ENOMEM;
+	}
+
+	priv->stats.vbatt_req++;
+
+	req->voltage_uv = voltage_uv;
+
+	ret = qmi_txn_init(&priv->qmi, &txn, wlfw_vbatt_resp_msg_v01_ei, resp);
+	if (ret < 0) {
+		icnss_pr_err("Fail to init txn for Vbatt message resp %d\n",
+			     ret);
+		goto out;
+	}
+
+	ret = qmi_send_request(&priv->qmi, NULL, &txn,
+			       QMI_WLFW_VBATT_REQ_V01,
+			       WLFW_VBATT_REQ_MSG_V01_MAX_MSG_LEN,
+			       wlfw_vbatt_req_msg_v01_ei, req);
+	if (ret < 0) {
+		qmi_txn_cancel(&txn);
+		icnss_pr_err("Fail to send Vbatt message req %d\n", ret);
+		goto out;
+	}
+
+	ret = qmi_txn_wait(&txn, WLFW_TIMEOUT);
+	if (ret < 0) {
+		icnss_pr_err("VBATT message resp wait failed with ret %d\n",
+				    ret);
+		goto out;
+	} else if (resp->resp.result != QMI_RESULT_SUCCESS_V01) {
+		icnss_pr_err("QMI Vbatt message request rejected, result:%d error:%d\n",
+				    resp->resp.result, resp->resp.error);
+		ret = -resp->resp.result;
+		goto out;
+	}
+
+	priv->stats.vbatt_resp++;
+
+	kfree(resp);
+	kfree(req);
+	return 0;
+
+out:
+	kfree(resp);
+	kfree(req);
+	priv->stats.vbatt_req_err++;
+	return ret;
+}

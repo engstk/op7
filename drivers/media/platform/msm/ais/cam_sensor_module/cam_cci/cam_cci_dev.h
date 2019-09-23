@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -26,6 +26,7 @@
 #include <linux/timer.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
+#include <linux/semaphore.h>
 #include <media/cam_sensor.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
@@ -144,6 +145,10 @@ struct cam_cci_master_info {
 	struct completion report_q[NUM_QUEUES];
 	atomic_t done_pending[NUM_QUEUES];
 	spinlock_t lock_q[NUM_QUEUES];
+	spinlock_t freq_cnt;
+	struct semaphore master_sem;
+	bool is_first_req;
+	uint16_t freq_ref_cnt;
 };
 
 struct cam_cci_clk_params_t {
@@ -200,6 +205,7 @@ enum cam_cci_state_t {
  * @lock_status: to protect changes to irq_status1
  * @is_burst_read: Flag to determine if we are performing
  *                 a burst read operation or not
+ * @irqs_disabled: Mask for IRQs that are disabled
  */
 struct cci_device {
 	struct v4l2_subdev subdev;
@@ -227,6 +233,7 @@ struct cci_device {
 	uint32_t irq_status1;
 	spinlock_t lock_status;
 	bool is_burst_read;
+	uint32_t irqs_disabled;
 };
 
 enum cam_cci_i2c_cmd_type {

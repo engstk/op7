@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -519,9 +519,11 @@ enum sm6150_functions {
 	msm_mux_qdss_cti,
 	msm_mux_phase_flag12,
 	msm_mux_copy_gp,
+	msm_mux_usb0_hs_ac,
 	msm_mux_emac_phy,
 	msm_mux_pcie_ep,
 	msm_mux_tgu_ch3,
+	msm_mux_usb1_hs_ac,
 	msm_mux_mdp_vsync0,
 	msm_mux_mdp_vsync1,
 	msm_mux_mdp_vsync2,
@@ -982,6 +984,9 @@ static const char * const phase_flag12_groups[] = {
 static const char * const copy_gp_groups[] = {
 	"gpio86",
 };
+static const char * const usb0_hs_ac_groups[] = {
+	"gpio88",
+};
 static const char * const emac_phy_groups[] = {
 	"gpio89",
 };
@@ -989,6 +994,9 @@ static const char * const pcie_ep_groups[] = {
 	"gpio89",
 };
 static const char * const tgu_ch3_groups[] = {
+	"gpio89",
+};
+static const char * const usb1_hs_ac_groups[] = {
 	"gpio89",
 };
 static const char * const mdp_vsync0_groups[] = {
@@ -1280,9 +1288,11 @@ static const struct msm_function sm6150_functions[] = {
 	FUNCTION(qdss_cti),
 	FUNCTION(phase_flag12),
 	FUNCTION(copy_gp),
+	FUNCTION(usb0_hs_ac),
 	FUNCTION(emac_phy),
 	FUNCTION(pcie_ep),
 	FUNCTION(tgu_ch3),
+	FUNCTION(usb1_hs_ac),
 	FUNCTION(mdp_vsync0),
 	FUNCTION(mdp_vsync1),
 	FUNCTION(mdp_vsync2),
@@ -1491,9 +1501,9 @@ static const struct msm_pingroup sm6150_groups[] = {
 	[85] = PINGROUP(85, SOUTH, NA, NA, NA, NA, NA, NA, NA, NA, NA),
 	[86] = PINGROUP(86, SOUTH, copy_gp, NA, NA, NA, NA, NA, NA, NA, NA),
 	[87] = PINGROUP(87, SOUTH, NA, NA, NA, NA, NA, NA, NA, NA, NA),
-	[88] = PINGROUP(88, WEST, NA, NA, NA, NA, NA, NA, NA, NA, NA),
-	[89] = PINGROUP(89, WEST, emac_phy, pcie_ep, tgu_ch3, NA, NA, NA, NA,
-			NA, NA),
+	[88] = PINGROUP(88, WEST, NA, usb0_hs_ac, NA, NA, NA, NA, NA, NA, NA),
+	[89] = PINGROUP(89, WEST, emac_phy, pcie_ep, tgu_ch3, usb1_hs_ac, NA,
+			NA, NA, NA, NA),
 	[90] = PINGROUP(90, WEST, mdp_vsync, mdp_vsync0, mdp_vsync1,
 			mdp_vsync2, mdp_vsync3, mdp_vsync4, mdp_vsync5,
 			pcie_clk, tgu_ch0),
@@ -1632,7 +1642,7 @@ static struct msm_dir_conn sm6150_dir_conn[] = {
 	{-1, 209},
 };
 
-static const struct msm_pinctrl_soc_data sm6150_pinctrl = {
+static struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.pins = sm6150_pins,
 	.npins = ARRAY_SIZE(sm6150_pins),
 	.functions = sm6150_functions,
@@ -1645,8 +1655,64 @@ static const struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.dir_conn_irq_base = 216,
 };
 
+static int sm6150_pinctrl_dir_conn_probe(struct platform_device *pdev)
+{
+	const __be32 *prop;
+	struct msm_dir_conn *dir_conn_list;
+	uint32_t dir_conn_length, iterator = 0;
+	int i, length, *dir_conn_entries, num_dir_conns;
+
+	prop = of_get_property(pdev->dev.of_node, "dirconn-list",
+			&length);
+
+	dir_conn_length = length / sizeof(u32);
+
+	dir_conn_entries = devm_kzalloc(&pdev->dev,
+				dir_conn_length*sizeof(uint32_t), GFP_KERNEL);
+	if (!dir_conn_entries)
+		return -ENOMEM;
+
+	for (i = 0; i < dir_conn_length; i++)
+		dir_conn_entries[i] = be32_to_cpu(prop[i]);
+
+	if (dir_conn_length % 3) {
+		dev_err(&pdev->dev,
+			"Can't parse an entry with fewer than three values\n");
+		return -EINVAL;
+	};
+
+	num_dir_conns = (dir_conn_length / 3);
+
+	dir_conn_list = devm_kzalloc(&pdev->dev,
+			num_dir_conns * sizeof(*dir_conn_list), GFP_KERNEL);
+	if (!dir_conn_list)
+		return -ENOMEM;
+
+	for (i = 0; i < num_dir_conns; i++) {
+		dir_conn_list[i].gpio = dir_conn_entries[iterator++];
+		dir_conn_list[i].hwirq = dir_conn_entries[iterator++];
+		dir_conn_list[i].tlmm_dc = dir_conn_entries[iterator++];
+	}
+
+	sm6150_pinctrl.dir_conn = dir_conn_list;
+	sm6150_pinctrl.n_dir_conns = num_dir_conns;
+
+	return 0;
+}
+
 static int sm6150_pinctrl_probe(struct platform_device *pdev)
 {
+	int len, ret;
+
+	if (of_find_property(pdev->dev.of_node, "dirconn-list", &len)) {
+		ret = sm6150_pinctrl_dir_conn_probe(pdev);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Unable to parse TLMM direct connects\n");
+			return ret;
+		}
+	}
+
 	return msm_pinctrl_probe(pdev, &sm6150_pinctrl);
 }
 

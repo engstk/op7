@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -82,6 +82,23 @@ enum dsi_engine_state {
 	DSI_CTRL_ENGINE_OFF = 0,
 	DSI_CTRL_ENGINE_ON,
 	DSI_CTRL_ENGINE_MAX,
+};
+
+
+/**
+ * enum dsi_ctrl_driver_ops - controller driver ops
+ */
+enum dsi_ctrl_driver_ops {
+	DSI_CTRL_OP_POWER_STATE_CHANGE,
+	DSI_CTRL_OP_CMD_ENGINE,
+	DSI_CTRL_OP_VID_ENGINE,
+	DSI_CTRL_OP_HOST_ENGINE,
+	DSI_CTRL_OP_CMD_TX,
+	DSI_CTRL_OP_HOST_INIT,
+	DSI_CTRL_OP_TPG,
+	DSI_CTRL_OP_PHY_SW_RESET,
+	DSI_CTRL_OP_ASYNC_TIMING,
+	DSI_CTRL_OP_MAX
 };
 
 /**
@@ -790,9 +807,10 @@ int dsi_ctrl_get_host_engine_init_state(struct dsi_ctrl *dsi_ctrl,
  */
 int dsi_ctrl_wait_for_cmd_mode_mdp_idle(struct dsi_ctrl *dsi_ctrl);
 /**
- * dsi_ctrl_update_host_init_state() - Set the host initialization state
+ * dsi_ctrl_update_host_state() - Set the host state
  */
-int dsi_ctrl_update_host_init_state(struct dsi_ctrl *dsi_ctrl, bool en);
+int dsi_ctrl_update_host_state(struct dsi_ctrl *dsi_ctrl,
+			       enum dsi_ctrl_driver_ops op, bool en);
 
 /**
  * dsi_ctrl_pixel_format_to_bpp() - returns number of bits per pxl
@@ -800,9 +818,24 @@ int dsi_ctrl_update_host_init_state(struct dsi_ctrl *dsi_ctrl, bool en);
 int dsi_ctrl_pixel_format_to_bpp(enum dsi_pixel_format dst_format);
 
 /**
+ * dsi_ctrl_hs_req_sel() - API to enable continuous clk support through phy
+ * @dsi_ctrl:			DSI controller handle.
+ * @sel_phy:			Boolean to control whether to select phy or
+ *				controller
+ */
+void dsi_ctrl_hs_req_sel(struct dsi_ctrl *dsi_ctrl, bool sel_phy);
+
+/**
  * dsi_ctrl_set_continuous_clk() - API to set/unset force clock lane HS request.
  * @dsi_ctrl:                      DSI controller handle.
  * @enable:			   variable to control continuous clock.
  */
 void dsi_ctrl_set_continuous_clk(struct dsi_ctrl *dsi_ctrl, bool enable);
+
+/**
+ * dsi_ctrl_wait4dynamic_refresh_done() - Poll for dynamic refresh done
+ *					interrupt.
+ * @dsi_ctrl:                      DSI controller handle.
+ */
+int dsi_ctrl_wait4dynamic_refresh_done(struct dsi_ctrl *ctrl);
 #endif /* _DSI_CTRL_H_ */

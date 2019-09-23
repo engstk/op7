@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -57,7 +57,7 @@ static inline unsigned long int get_ubwc_compression_ratio(
 	struct ubwc_cr_stats_info_type ubwc_stats_info)
 {
 	unsigned long int sum = 0, weighted_sum = 0;
-	unsigned long int compression_ratio = 1 << 16;
+	unsigned long int compression_ratio = 0;
 
 	weighted_sum =
 		32  * ubwc_stats_info.cr_stats_info0 +
@@ -633,6 +633,7 @@ static unsigned long msm_vidc_calc_freq(struct msm_vidc_inst *inst,
 	u32 filled_len)
 {
 	unsigned long freq = 0;
+	unsigned long sw_overhead = 0;
 	unsigned long vpp_cycles = 0, vsp_cycles = 0;
 	unsigned long fw_cycles = 0, fw_vpp_cycles = 0;
 	u32 vpp_cycles_per_mb;
@@ -668,9 +669,6 @@ static unsigned long msm_vidc_calc_freq(struct msm_vidc_inst *inst,
 
 		vpp_cycles = mbs_per_second * vpp_cycles_per_mb /
 				inst->clk_data.work_route;
-		/* 21 / 20 is minimum overhead factor */
-		vpp_cycles += max(vpp_cycles / 20, fw_vpp_cycles);
-
 		vsp_cycles = mbs_per_second * inst->clk_data.entry->vsp_cycles;
 
 		/* bitrate is based on fps, scale it using operating rate */
@@ -682,16 +680,35 @@ static unsigned long msm_vidc_calc_freq(struct msm_vidc_inst *inst,
 		vsp_cycles += ((u64)inst->clk_data.bitrate * vsp_factor_num) /
 				vsp_factor_den;
 
+		/* sw overhead factor */
+		sw_overhead = ((u64)vsp_cycles * fw_vpp_cycles) / vpp_cycles;
+		vsp_cycles += max(vsp_cycles/20, sw_overhead);
+
+		/* 21 / 20 is minimum overhead factor */
+		vpp_cycles += max(vpp_cycles / 20, fw_vpp_cycles);
+
+		if (inst->clk_data.work_route > 1)
+			vpp_cycles += (vpp_cycles * 14 / 1000);
+
 	} else if (inst->session_type == MSM_VIDC_DECODER) {
 		vpp_cycles = mbs_per_second * inst->clk_data.entry->vpp_cycles /
 				inst->clk_data.work_route;
-		/* 21 / 20 is minimum overhead factor */
-		vpp_cycles += max(vpp_cycles / 20, fw_vpp_cycles);
 
 		vsp_cycles = mbs_per_second * inst->clk_data.entry->vsp_cycles;
 
 		/* vsp perf is about 0.5 bits/cycle */
 		vsp_cycles += ((fps * filled_len * 8) * 10) / 5;
+
+		/* sw overhead factor */
+		sw_overhead = ((u64)vsp_cycles * fw_vpp_cycles) / vpp_cycles;
+		vsp_cycles += max(vsp_cycles/20, sw_overhead);
+
+		/* 21 / 20 is minimum overhead factor */
+		vpp_cycles += max(vpp_cycles / 20, fw_vpp_cycles);
+
+		/* 1.059 pipeline overhead factor */
+		if (inst->clk_data.work_route > 1)
+			vpp_cycles += vpp_cycles/17;
 
 	} else {
 		dprintk(VIDC_ERR, "Unknown session type = %s\n", __func__);
@@ -715,7 +732,7 @@ static unsigned long msm_vidc_calc_freq(struct msm_vidc_inst *inst,
 		dcvs->load_norm;
 
 	dprintk(VIDC_PROF,
-		"%s: inst %pK: %x : filled len %d required freq %lu load_norm %lu\n",
+		"%s: inst %pK: %x : filled len %d required freq %lu load_norm %d\n",
 		__func__, inst, hash32_ptr(inst->session),
 		filled_len, freq, dcvs->load_norm);
 
@@ -727,7 +744,9 @@ int msm_vidc_set_clocks(struct msm_vidc_core *core)
 	struct hfi_device *hdev;
 	unsigned long freq_core_1 = 0, freq_core_2 = 0, rate = 0;
 	unsigned long freq_core_max = 0;
-	struct msm_vidc_inst *temp = NULL;
+	struct msm_vidc_inst *inst = NULL;
+	struct msm_vidc_buffer *temp, *next;
+	u32 device_addr, filled_len;
 	int rc = 0, i = 0;
 	struct allowed_clock_rates_table *allowed_clks_tbl = NULL;
 	bool increment, decrement;
@@ -743,15 +762,34 @@ int msm_vidc_set_clocks(struct msm_vidc_core *core)
 	mutex_lock(&core->lock);
 	increment = false;
 	decrement = true;
-	list_for_each_entry(temp, &core->instances, list) {
+	list_for_each_entry(inst, &core->instances, list) {
+		device_addr = 0;
+		filled_len = 0;
+		mutex_lock(&inst->registeredbufs.lock);
+		list_for_each_entry_safe(temp, next,
+				&inst->registeredbufs.list, list) {
+			if (temp->vvb.vb2_buf.type ==
+				V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE) {
+				filled_len = max(filled_len,
+					temp->vvb.vb2_buf.planes[0].bytesused);
+				device_addr = temp->smem[0].device_addr;
+			}
+		}
+		mutex_unlock(&inst->registeredbufs.lock);
 
-		if (temp->clk_data.core_id == VIDC_CORE_ID_1)
-			freq_core_1 += temp->clk_data.min_freq;
-		else if (temp->clk_data.core_id == VIDC_CORE_ID_2)
-			freq_core_2 += temp->clk_data.min_freq;
-		else if (temp->clk_data.core_id == VIDC_CORE_ID_3) {
-			freq_core_1 += temp->clk_data.min_freq;
-			freq_core_2 += temp->clk_data.min_freq;
+		if (!filled_len || !device_addr) {
+			dprintk(VIDC_DBG, "%s no input for session %x\n",
+				__func__, hash32_ptr(inst->session));
+			continue;
+		}
+
+		if (inst->clk_data.core_id == VIDC_CORE_ID_1)
+			freq_core_1 += inst->clk_data.min_freq;
+		else if (inst->clk_data.core_id == VIDC_CORE_ID_2)
+			freq_core_2 += inst->clk_data.min_freq;
+		else if (inst->clk_data.core_id == VIDC_CORE_ID_3) {
+			freq_core_1 += inst->clk_data.min_freq;
+			freq_core_2 += inst->clk_data.min_freq;
 		}
 
 		freq_core_max = max_t(unsigned long, freq_core_1, freq_core_2);
@@ -765,7 +803,7 @@ int msm_vidc_set_clocks(struct msm_vidc_core *core)
 			break;
 		}
 
-		if (temp->clk_data.turbo_mode) {
+		if (inst->clk_data.turbo_mode) {
 			dprintk(VIDC_PROF,
 				"Found an instance with Turbo request\n");
 			freq_core_max = msm_vidc_max_freq(core);
@@ -773,10 +811,10 @@ int msm_vidc_set_clocks(struct msm_vidc_core *core)
 			break;
 		}
 		/* increment even if one session requested for it */
-		if (temp->clk_data.dcvs_flags & MSM_VIDC_DCVS_INCR)
+		if (inst->clk_data.dcvs_flags & MSM_VIDC_DCVS_INCR)
 			increment = true;
 		/* decrement only if all sessions requested for it */
-		if (!(temp->clk_data.dcvs_flags & MSM_VIDC_DCVS_DECR))
+		if (!(inst->clk_data.dcvs_flags & MSM_VIDC_DCVS_DECR))
 			decrement = false;
 	}
 
@@ -816,8 +854,8 @@ int msm_vidc_validate_operating_rate(struct msm_vidc_inst *inst,
 {
 	struct msm_vidc_inst *temp;
 	struct msm_vidc_core *core;
-	unsigned long max_freq, freq_left, ops_left, load, cycles, freq = 0;
-	unsigned long mbs_per_second;
+	unsigned long max_freq, freq_left, op_rate_possible, load, cycles;
+	unsigned long mbs_per_second, freq_core0 = 0, freq_core1 = 0, freq;
 	int rc = 0;
 	u32 curr_operating_rate = 0;
 
@@ -826,7 +864,13 @@ int msm_vidc_validate_operating_rate(struct msm_vidc_inst *inst,
 		return -EINVAL;
 	}
 	core = inst->core;
-	curr_operating_rate = inst->clk_data.operating_rate >> 16;
+	curr_operating_rate =
+		max(inst->clk_data.operating_rate >> 16, inst->prop.fps);
+	operating_rate = operating_rate >> 16;
+
+	/* always allow decreasing operating rate*/
+	if (curr_operating_rate >= operating_rate)
+		return 0;
 
 	mutex_lock(&core->lock);
 	max_freq = msm_vidc_max_freq(core);
@@ -836,10 +880,24 @@ int msm_vidc_validate_operating_rate(struct msm_vidc_inst *inst,
 				temp->state >= MSM_VIDC_RELEASE_RESOURCES_DONE)
 			continue;
 
-		freq += temp->clk_data.min_freq;
+		if (temp->clk_data.core_id == VIDC_CORE_ID_1)
+			freq_core0 += temp->clk_data.min_freq;
+		else if (temp->clk_data.core_id == VIDC_CORE_ID_2)
+			freq_core1 += temp->clk_data.min_freq;
+		else if (temp->clk_data.core_id == VIDC_CORE_ID_3) {
+			freq_core0 += temp->clk_data.min_freq;
+			freq_core1 += temp->clk_data.min_freq;
+		}
 	}
 
-	freq_left = max_freq - freq;
+	if (inst->clk_data.core_id == VIDC_CORE_ID_1)
+		freq = freq_core0;
+	else if (inst->clk_data.core_id == VIDC_CORE_ID_2)
+		freq = freq_core1;
+	else
+		freq = max(freq_core0, freq_core1);
+
+	freq_left = max_freq > freq ? max_freq - freq : 0;
 
 	mbs_per_second = msm_comm_get_inst_load_per_core(inst,
 		LOAD_CALC_NO_QUIRKS);
@@ -850,13 +908,15 @@ int msm_vidc_validate_operating_rate(struct msm_vidc_inst *inst,
 			inst->clk_data.entry->low_power_cycles :
 			cycles;
 
+	if (inst->clk_data.work_route)
+		cycles /= inst->clk_data.work_route;
+
 	load = cycles * mbs_per_second;
 
-	ops_left = load ? (freq_left / load) : 0;
+	op_rate_possible = load ? (freq_left * curr_operating_rate / load) : 0;
 
-	operating_rate = operating_rate >> 16;
 
-	if ((curr_operating_rate * (1 + ops_left)) >= operating_rate ||
+	if (op_rate_possible >= operating_rate ||
 			msm_vidc_clock_voting ||
 			inst->clk_data.buffer_counter < DCVS_FTB_WINDOW) {
 		dprintk(VIDC_DBG,
@@ -896,7 +956,7 @@ int msm_comm_scale_clocks(struct msm_vidc_inst *inst)
 				temp->vvb.vb2_buf.planes[0].bytesused);
 			if (inst->session_type == MSM_VIDC_ENCODER &&
 				(temp->vvb.flags &
-				 V4L2_QCOM_BUF_FLAG_PERF_MODE)) {
+				V4L2_QCOM_BUF_FLAG_PERF_MODE)) {
 				is_turbo = true;
 			}
 			device_addr = temp->smem[0].device_addr;
@@ -907,7 +967,7 @@ int msm_comm_scale_clocks(struct msm_vidc_inst *inst)
 	if (!filled_len || !device_addr) {
 		dprintk(VIDC_DBG, "%s no input for session %x\n",
 			__func__, hash32_ptr(inst->session));
-		goto no_clock_change;
+		return 0;
 	}
 
 	freq = call_core_op(inst->core, calc_freq, inst, filled_len);
@@ -925,7 +985,6 @@ int msm_comm_scale_clocks(struct msm_vidc_inst *inst)
 
 	msm_vidc_set_clocks(inst->core);
 
-no_clock_change:
 	return 0;
 }
 
@@ -1025,7 +1084,7 @@ void msm_clock_data_reset(struct msm_vidc_inst *inst)
 
 	dprintk(VIDC_DBG, "Init DCVS Load\n");
 
-	if (!inst || !inst->core) {
+	if (!inst || !inst->core || !inst->clk_data.entry) {
 		dprintk(VIDC_ERR, "%s Invalid args: Inst = %pK\n",
 			__func__, inst);
 		return;
@@ -1143,8 +1202,7 @@ int msm_vidc_get_extra_buff_count(struct msm_vidc_inst *inst,
 	 * batch size count of extra buffers added on output port
 	 */
 	if (is_output_buffer(inst, buffer_type)) {
-		if (inst->core->resources.decode_batching &&
-			is_decode_session(inst) &&
+		if (inst->decode_batching && is_decode_session(inst) &&
 			count < inst->batch.size)
 			count = inst->batch.size;
 	}
@@ -1265,7 +1323,15 @@ static int msm_vidc_decide_work_mode_ar50(struct msm_vidc_inst *inst)
 			break;
 		}
 	} else if (inst->session_type == MSM_VIDC_ENCODER) {
+		u32 rc_mode = 0;
+
 		pdata.video_work_mode = VIDC_WORK_MODE_1;
+		rc_mode =  msm_comm_g_ctrl_for_id(inst,
+				V4L2_CID_MPEG_VIDEO_BITRATE_MODE);
+		if (rc_mode == V4L2_MPEG_VIDEO_BITRATE_MODE_VBR ||
+		    rc_mode == V4L2_MPEG_VIDEO_BITRATE_MODE_MBR ||
+		    rc_mode == V4L2_MPEG_VIDEO_BITRATE_MODE_MBR_VFR)
+			pdata.video_work_mode = VIDC_WORK_MODE_2;
 	} else {
 		return -EINVAL;
 	}
@@ -1378,7 +1444,7 @@ decision_done:
 static inline int msm_vidc_power_save_mode_enable(struct msm_vidc_inst *inst,
 	bool enable)
 {
-	u32 rc = 0, mbs_per_frame;
+	u32 rc = 0, mbs_per_frame, mbs_per_sec;
 	u32 prop_id = 0;
 	void *pdata = NULL;
 	struct hfi_device *hdev = NULL;
@@ -1393,8 +1459,10 @@ static inline int msm_vidc_power_save_mode_enable(struct msm_vidc_inst *inst,
 		return 0;
 	}
 	mbs_per_frame = msm_vidc_get_mbs_per_frame(inst);
+	mbs_per_sec = mbs_per_frame * msm_vidc_get_fps(inst);
+
 	if (mbs_per_frame > inst->core->resources.max_hq_mbs_per_frame ||
-		msm_vidc_get_fps(inst) > inst->core->resources.max_hq_fps) {
+		mbs_per_sec > inst->core->resources.max_hq_mbs_per_sec) {
 		enable = true;
 	}
 	/* Power saving always disabled for CQ RC mode. */

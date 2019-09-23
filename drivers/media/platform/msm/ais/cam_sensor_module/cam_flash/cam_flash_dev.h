@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,6 +36,7 @@
 #include "cam_debug_util.h"
 #include "cam_sensor_io.h"
 #include "cam_flash_core.h"
+#include "cam_context.h"
 
 #define CAMX_FLASH_DEV_NAME "cam-flash-dev"
 
@@ -161,6 +162,7 @@ struct cam_flash_func_tbl {
 
 /**
  *  struct cam_flash_ctrl
+ * @device_name         : Device name
  * @soc_info            : Soc related information
  * @pdev                : Platform device
  * @per_frame[]         : Per_frame setting array
@@ -173,7 +175,7 @@ struct cam_flash_func_tbl {
  * @flash_num_sources   : Number of flash sources
  * @torch_num_source    : Number of torch sources
  * @flash_mutex         : Mutex for flash operations
- * @flash_state         : Current flash state (LOW/OFF/ON/INIT)
+  * @flash_state         : Current flash state (LOW/OFF/ON/INIT)
  * @flash_type          : Flash types (PMIC/I2C/GPIO)
  * @is_regulator_enable : Regulator disable/enable notifier
  * @func_tbl            : Function table for different HW
@@ -183,8 +185,10 @@ struct cam_flash_func_tbl {
  * @cci_i2c_master      : I2C structure
  * @io_master_info      : Information about the communication master
  * @i2c_data            : I2C register settings
+ * @last_flush_req      : last request to flush
  */
 struct cam_flash_ctrl {
+	char device_name[CAM_CTX_DEV_NAME_MAX_LENGTH];
 	struct cam_hw_soc_info              soc_info;
 	struct platform_device             *pdev;
 	struct cam_sensor_power_ctrl_t      power_info;
@@ -208,6 +212,7 @@ struct cam_flash_ctrl {
 	enum   cci_i2c_master_t             cci_i2c_master;
 	struct camera_io_master             io_master_info;
 	struct i2c_data_settings            i2c_data;
+	uint32_t                            last_flush_req;
 };
 
 int cam_flash_pmic_pkt_parser(struct cam_flash_ctrl *fctrl, void *arg);

@@ -1066,21 +1066,6 @@ static int mmc_blk_ioctl_cmd(struct mmc_blk_data *md,
 		goto cmd_done;
 	}
 
-	mmc_get_card(card);
-
-	if (mmc_card_cmdq(card)) {
-		err = mmc_cmdq_halt_on_empty_queue(card->host);
-		if (err) {
-			pr_err("%s: halt failed while doing %s err (%d)\n",
-					mmc_hostname(card->host),
-					__func__, err);
-			mmc_put_card(card);
-			goto cmd_done;
-		}
-	}
-
-	mmc_put_card(card);
-
 	/*
 	 * Dispatch the ioctl() into the block request queue.
 	 */
@@ -1101,11 +1086,6 @@ static int mmc_blk_ioctl_cmd(struct mmc_blk_data *md,
 	err = mmc_blk_ioctl_copy_to_user(ic_ptr, idata);
 	blk_put_request(req);
 
-	if (mmc_card_cmdq(card)) {
-		if (mmc_cmdq_halt(card->host, false))
-			pr_err("%s: %s: cmdq unhalt failed\n",
-			       mmc_hostname(card->host), __func__);
-	}
 cmd_done:
 	kfree(idata->buf);
 	kfree(idata);
@@ -2891,7 +2871,7 @@ static void mmc_blk_cmdq_reset_all(struct mmc_host *host, int err)
 			dcmd_mrq = &cmdq_req->mrq;
 			WARN_ON(!test_and_clear_bit(CMDQ_STATE_DCMD_ACTIVE,
 					&ctx_info->curr_state));
-			pr_debug("%s: cmd(%u), req_op(%llu)\n", __func__,
+			pr_debug("%s: cmd(%u), req_op(%u)\n", __func__,
 				 dcmd_mrq->cmd->opcode, req_op(dcmd_mrq->req));
 			if (!is_err_mrq_dcmd && !dcmd_mrq->cmd->error &&
 				(req_op(dcmd_mrq->req) == REQ_OP_SECURE_ERASE ||
@@ -3186,6 +3166,7 @@ out:
 	if (err_rwsem && !(err || err_resp)) {
 		mmc_host_clk_release(host);
 		wake_up(&ctx_info->wait);
+		host->last_completed_rq_time = ktime_get();
 		mmc_put_card(host->card);
 	}
 
@@ -3367,9 +3348,9 @@ static void mmc_blk_issue_rw_rq(struct mmc_queue *mq, struct request *new_req)
 			int err;
 
 			err = mmc_blk_reset(md, card->host, type);
-			if (!err)
+			if (!err) {
 				break;
-			if (err == -ENODEV) {
+			} else {
 				mmc_blk_rw_cmd_abort(mq, card, old_req, mq_rq);
 				mmc_blk_rw_try_restart(mq, new_req, mqrq_cur);
 				return;
@@ -3488,6 +3469,7 @@ cmdq_switch:
 		pr_err("%s: %s: mmc_blk_cmdq_switch failed: %d\n",
 			mmc_hostname(host), __func__,  err);
 		ret = err;
+		goto out;
 	}
 cmdq_unhalt:
 	err = mmc_cmdq_halt(host, false);
@@ -3534,15 +3516,10 @@ static int  mmc_cmdq_wait_for_small_sector_read(struct mmc_card *card,
 	return ret;
 }
 
-static int mmc_blk_cmdq_issue_drv_op(struct mmc_card *card, struct request *req)
+static int mmc_blk_cmdq_issue_drv_op(struct mmc_card *card,
+				struct mmc_queue *mq, struct request *req)
 {
-	struct mmc_queue_req *mq_rq;
-	u8 **ext_csd;
-	u32 status;
 	int ret;
-
-	mq_rq = req_to_mmc_queue_req(req);
-	ext_csd = mq_rq->drv_op_data;
 
 	ret = mmc_cmdq_halt_on_empty_queue(card->host);
 	if (ret) {
@@ -3553,35 +3530,8 @@ static int mmc_blk_cmdq_issue_drv_op(struct mmc_card *card, struct request *req)
 		return ret;
 	}
 
-	switch (mq_rq->drv_op) {
-	case MMC_DRV_OP_GET_EXT_CSD:
-		ret = mmc_get_ext_csd(card, ext_csd);
-		if (ret) {
-			pr_err("%s: failed to get ext_csd\n",
-						mmc_hostname(card->host));
-			goto out_unhalt;
-		}
-		break;
-	case MMC_DRV_OP_GET_CARD_STATUS:
-		ret = mmc_send_status(card, &status);
-		if (ret) {
-			pr_err("%s: failed to get status\n",
-						mmc_hostname(card->host));
-			goto out_unhalt;
-		}
-		ret = status;
-		break;
-	default:
-		pr_err("%s: unknown driver specific operation\n",
-					mmc_hostname(card->host));
-		ret = -EINVAL;
-		break;
-	}
-	mq_rq->drv_op_result = ret;
-	ret = ret ? BLK_STS_IOERR : BLK_STS_OK;
+	mmc_blk_issue_drv_op(mq, req);
 
-out_unhalt:
-	blk_end_request_all(req, ret);
 	ret = mmc_cmdq_halt(card->host, false);
 	if (ret)
 		pr_err("%s: %s: failed to unhalt\n",
@@ -3656,7 +3606,7 @@ static int mmc_blk_cmdq_issue_rq(struct mmc_queue *mq, struct request *req)
 			break;
 		case REQ_OP_DRV_IN:
 		case REQ_OP_DRV_OUT:
-			ret = mmc_blk_cmdq_issue_drv_op(card, req);
+			ret = mmc_blk_cmdq_issue_drv_op(card, mq, req);
 			break;
 		default:
 			ret = mmc_blk_cmdq_issue_rw_rq(mq, req);
@@ -4313,9 +4263,7 @@ static int mmc_blk_probe(struct mmc_card *card)
 
 	dev_set_drvdata(&card->dev, md);
 
-#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 	mmc_set_bus_resume_policy(card->host, 1);
-#endif
 
 	if (mmc_add_disk(md))
 		goto out;
@@ -4363,9 +4311,7 @@ static void mmc_blk_remove(struct mmc_card *card)
 	pm_runtime_put_noidle(&card->dev);
 	mmc_blk_remove_req(md);
 	dev_set_drvdata(&card->dev, NULL);
-#ifdef CONFIG_MMC_BLOCK_DEFERRED_RESUME
 	mmc_set_bus_resume_policy(card->host, 0);
-#endif
 }
 
 static int _mmc_blk_suspend(struct mmc_card *card, bool wait)

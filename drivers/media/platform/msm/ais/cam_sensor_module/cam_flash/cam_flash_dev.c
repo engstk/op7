@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -15,6 +15,7 @@
 #include "cam_flash_dev.h"
 #include "cam_flash_soc.h"
 #include "cam_flash_core.h"
+#include "cam_common_util.h"
 
 static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 		void *arg, struct cam_flash_private_soc *soc_private)
@@ -57,7 +58,8 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 			goto release_mutex;
 		}
 
-		rc = copy_from_user(&flash_acq_dev, (void __user *)cmd->handle,
+		rc = copy_from_user(&flash_acq_dev,
+			u64_to_user_ptr(cmd->handle),
 			sizeof(flash_acq_dev));
 		if (rc) {
 			CAM_ERR(CAM_FLASH, "Failed Copying from User");
@@ -77,7 +79,8 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 		fctrl->bridge_intf.session_hdl =
 			flash_acq_dev.session_handle;
 
-		rc = copy_to_user((void __user *) cmd->handle, &flash_acq_dev,
+		rc = copy_to_user(u64_to_user_ptr(cmd->handle),
+			&flash_acq_dev,
 			sizeof(struct cam_sensor_acquire_dev));
 		if (rc) {
 			CAM_ERR(CAM_FLASH, "Failed Copy to User with rc = %d",
@@ -104,6 +107,15 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 				fctrl->bridge_intf.device_hdl,
 				fctrl->bridge_intf.link_hdl);
 			rc = -EINVAL;
+			goto release_mutex;
+		}
+
+		if (fctrl->bridge_intf.link_hdl != -1) {
+			CAM_ERR(CAM_SENSOR,
+				"Device [%d] still active on link 0x%x",
+				fctrl->flash_state,
+				fctrl->bridge_intf.link_hdl);
+			rc = -EAGAIN;
 			goto release_mutex;
 		}
 
@@ -137,8 +149,8 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 			flash_cap.max_current_torch[i] =
 				soc_private->torch_max_current[i];
 
-		if (copy_to_user((void __user *) cmd->handle, &flash_cap,
-			sizeof(struct cam_flash_query_cap_info))) {
+		if (copy_to_user(u64_to_user_ptr(cmd->handle),
+			&flash_cap, sizeof(struct cam_flash_query_cap_info))) {
 			CAM_ERR(CAM_FLASH, "Failed Copy to User");
 			rc = -EFAULT;
 			goto release_mutex;
@@ -169,7 +181,9 @@ static int32_t cam_flash_driver_cmd(struct cam_flash_ctrl *fctrl,
 			goto release_mutex;
 		}
 
+		cam_flash_off(fctrl);
 		fctrl->func_tbl.flush_req(fctrl, FLUSH_ALL, 0);
+		fctrl->last_flush_req = 0;
 		fctrl->flash_state = CAM_FLASH_STATE_ACQUIRE;
 		break;
 	}
@@ -306,7 +320,14 @@ static int cam_flash_platform_remove(struct platform_device *pdev)
 		return 0;
 	}
 
-	devm_kfree(&pdev->dev, fctrl);
+	CAM_INFO(CAM_FLASH, "Platform remove invoked");
+	mutex_lock(&fctrl->flash_mutex);
+	cam_flash_shutdown(fctrl);
+	mutex_unlock(&fctrl->flash_mutex);
+	cam_unregister_subdev(&(fctrl->v4l2_dev_str));
+	platform_set_drvdata(pdev, NULL);
+	v4l2_set_subdevdata(&fctrl->v4l2_dev_str.sd, NULL);
+	kfree(fctrl);
 
 	return 0;
 }
@@ -320,6 +341,8 @@ static int32_t cam_flash_i2c_driver_remove(struct i2c_client *client)
 		CAM_ERR(CAM_FLASH, "Flash device is NULL");
 		return -EINVAL;
 	}
+
+	CAM_INFO(CAM_FLASH, "i2c driver remove invoked");
 	/*Free Allocated Mem */
 	kfree(fctrl->i2c_data.per_frame);
 	fctrl->i2c_data.per_frame = NULL;
@@ -364,6 +387,8 @@ static int cam_flash_init_subdev(struct cam_flash_ctrl *fctrl)
 {
 	int rc = 0;
 
+	strlcpy(fctrl->device_name, CAM_FLASH_NAME,
+		sizeof(fctrl->device_name));
 	fctrl->v4l2_dev_str.internal_ops =
 		&cam_flash_internal_ops;
 	fctrl->v4l2_dev_str.ops = &cam_flash_subdev_ops;
@@ -466,10 +491,12 @@ static int32_t cam_flash_platform_probe(struct platform_device *pdev)
 	}
 
 	fctrl->bridge_intf.device_hdl = -1;
+	fctrl->bridge_intf.link_hdl = -1;
 	fctrl->bridge_intf.ops.get_dev_info = cam_flash_publish_dev_info;
 	fctrl->bridge_intf.ops.link_setup = cam_flash_establish_link;
 	fctrl->bridge_intf.ops.apply_req = cam_flash_apply_request;
 	fctrl->bridge_intf.ops.flush_req = cam_flash_flush_request;
+	fctrl->last_flush_req = 0;
 
 	mutex_init(&(fctrl->flash_mutex));
 
@@ -551,10 +578,12 @@ static int32_t cam_flash_i2c_driver_probe(struct i2c_client *client,
 	fctrl->func_tbl.flush_req = cam_flash_i2c_flush_request;
 
 	fctrl->bridge_intf.device_hdl = -1;
+	fctrl->bridge_intf.link_hdl = -1;
 	fctrl->bridge_intf.ops.get_dev_info = cam_flash_publish_dev_info;
 	fctrl->bridge_intf.ops.link_setup = cam_flash_establish_link;
 	fctrl->bridge_intf.ops.apply_req = cam_flash_apply_request;
 	fctrl->bridge_intf.ops.flush_req = cam_flash_flush_request;
+	fctrl->last_flush_req = 0;
 
 	mutex_init(&(fctrl->flash_mutex));
 	fctrl->flash_state = CAM_FLASH_STATE_INIT;

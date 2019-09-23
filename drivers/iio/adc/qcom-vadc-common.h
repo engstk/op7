@@ -24,6 +24,8 @@
 #define VADC_DEF_CALIB_TYPE			VADC_CALIB_ABSOLUTE
 #define VADC_DEF_VBAT_PRESCALING		1 /* 1:3 */
 
+#define VADC_DEF_LUT_INDEX			0 /* Default or no LUT used */
+
 #define VADC_DECIMATION_MIN			512
 #define VADC_DECIMATION_MAX			4096
 #define ADC5_DECIMATION_SHORT			250
@@ -49,6 +51,7 @@
 #define VADC5_MAX_CODE				0x7fff
 #define VADC5_FULL_SCALE_CODE			0x70e4
 #define ADC_USR_DATA_CHECK			0x8000
+#define ADC_HC_VDD_REF			1875000
 
 /**
  * struct vadc_map_pt - Map the graph representation for ADC channel
@@ -162,7 +165,7 @@ int qcom_vadc_scale(enum vadc_scale_fn_type scaletype,
 
 int qcom_vadc_hw_scale(enum vadc_scale_fn_type scaletype,
 		    const struct vadc_prescale_ratio *prescale,
-		    const struct adc_data *data,
+		    const struct adc_data *data, unsigned int lut_index,
 		    u16 adc_code, int *result_mdec);
 
 int qcom_vadc_decimation_from_dt(u32 value);

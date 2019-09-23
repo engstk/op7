@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -417,6 +417,52 @@ static void ipa3_uc_wdi_event_handler(struct IpaHwSharedMemCommonMapping_t
 }
 
 /**
+ * ipa3_get_wdi_gsi_stats() - Query WDI gsi stats from uc
+ * @stats:	[inout] stats blob from client populated by driver
+ *
+ * Returns:	0 on success, negative on failure
+ *
+ * @note Cannot be called from atomic context
+ *
+ */
+int ipa3_get_wdi_gsi_stats(struct ipa3_uc_dbg_ring_stats *stats)
+{
+	int i;
+
+	if (!ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio) {
+		IPAERR("bad NULL parms for wdi_gsi_stats\n");
+		return -EINVAL;
+	}
+
+	IPA_ACTIVE_CLIENTS_INC_SIMPLE();
+	for (i = 0; i < MAX_WDI2_CHANNELS; i++) {
+		stats->ring[i].ringFull = ioread32(
+			ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio
+			+ i * IPA3_UC_DEBUG_STATS_OFF +
+			IPA3_UC_DEBUG_STATS_RINGFULL_OFF);
+		stats->ring[i].ringEmpty = ioread32(
+			ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio
+			+ i * IPA3_UC_DEBUG_STATS_OFF +
+			IPA3_UC_DEBUG_STATS_RINGEMPTY_OFF);
+		stats->ring[i].ringUsageHigh = ioread32(
+			ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio
+			+ i * IPA3_UC_DEBUG_STATS_OFF +
+			IPA3_UC_DEBUG_STATS_RINGUSAGEHIGH_OFF);
+		stats->ring[i].ringUsageLow = ioread32(
+			ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio
+			+ i * IPA3_UC_DEBUG_STATS_OFF +
+			IPA3_UC_DEBUG_STATS_RINGUSAGELOW_OFF);
+		stats->ring[i].RingUtilCount = ioread32(
+			ipa3_ctx->wdi2_ctx.dbg_stats.uc_dbg_stats_mmio
+			+ i * IPA3_UC_DEBUG_STATS_OFF +
+			IPA3_UC_DEBUG_STATS_RINGUTILCOUNT_OFF);
+	}
+	IPA_ACTIVE_CLIENTS_DEC_SIMPLE();
+
+	return 0;
+}
+
+/**
  * ipa3_get_wdi_stats() - Query WDI statistics from uc
  * @stats:	[inout] stats blob from client populated by driver
  *
@@ -503,6 +549,38 @@ int ipa3_wdi_init(void)
 	return 0;
 }
 
+static int ipa_create_ap_smmu_mapping_pa(phys_addr_t pa, size_t len,
+		bool device, unsigned long *iova)
+{
+	struct ipa_smmu_cb_ctx *cb = ipa3_get_smmu_ctx(IPA_SMMU_CB_AP);
+	unsigned long va = roundup(cb->next_addr, PAGE_SIZE);
+	int prot = IOMMU_READ | IOMMU_WRITE;
+	size_t true_len = roundup(len + pa - rounddown(pa, PAGE_SIZE),
+			PAGE_SIZE);
+	int ret;
+
+	if (!cb->valid) {
+		IPAERR("No SMMU CB setup\n");
+		return -EINVAL;
+	}
+
+	if (len > PAGE_SIZE)
+		va = roundup(cb->next_addr, len);
+
+	ret = ipa3_iommu_map(cb->mapping->domain, va, rounddown(pa, PAGE_SIZE),
+			true_len,
+			device ? (prot | IOMMU_MMIO) : prot);
+	if (ret) {
+		IPAERR("iommu map failed for pa=%pa len=%zu\n", &pa, true_len);
+		return -EINVAL;
+	}
+
+	ipa3_ctx->wdi_map_cnt++;
+	cb->next_addr = va + true_len;
+	*iova = va + pa - rounddown(pa, PAGE_SIZE);
+	return 0;
+}
+
 static int ipa_create_uc_smmu_mapping_pa(phys_addr_t pa, size_t len,
 		bool device, unsigned long *iova)
 {
@@ -531,6 +609,67 @@ static int ipa_create_uc_smmu_mapping_pa(phys_addr_t pa, size_t len,
 	*iova = va + pa - rounddown(pa, PAGE_SIZE);
 	return 0;
 }
+
+static int ipa_create_ap_smmu_mapping_sgt(struct sg_table *sgt,
+		unsigned long *iova)
+{
+	struct ipa_smmu_cb_ctx *cb = ipa3_get_smmu_ctx(IPA_SMMU_CB_AP);
+	unsigned long va = roundup(cb->next_addr, PAGE_SIZE);
+	int prot = IOMMU_READ | IOMMU_WRITE;
+	int ret, i;
+	struct scatterlist *sg;
+	unsigned long start_iova = va;
+	phys_addr_t phys;
+	size_t len = 0;
+	int count = 0;
+
+	if (!cb->valid) {
+		IPAERR("No SMMU CB setup\n");
+		return -EINVAL;
+	}
+	if (!sgt) {
+		IPAERR("Bad parameters, scatter / gather list is NULL\n");
+		return -EINVAL;
+	}
+
+	for_each_sg(sgt->sgl, sg, sgt->nents, i) {
+		/* directly get sg_tbl PA from wlan-driver */
+		len += PAGE_ALIGN(sg->offset + sg->length);
+	}
+
+	if (len > PAGE_SIZE) {
+		va = roundup(cb->next_addr,
+				roundup_pow_of_two(len));
+		start_iova = va;
+	}
+
+	for_each_sg(sgt->sgl, sg, sgt->nents, i) {
+		/* directly get sg_tbl PA from wlan-driver */
+		phys = sg->dma_address;
+		len = PAGE_ALIGN(sg->offset + sg->length);
+
+		ret = ipa3_iommu_map(cb->mapping->domain, va, phys, len, prot);
+		if (ret) {
+			IPAERR("iommu map failed for pa=%pa len=%zu\n",
+					&phys, len);
+			goto bad_mapping;
+		}
+		va += len;
+		ipa3_ctx->wdi_map_cnt++;
+		count++;
+	}
+	cb->next_addr = va;
+	*iova = start_iova;
+
+	return 0;
+
+bad_mapping:
+	for_each_sg(sgt->sgl, sg, count, i)
+		iommu_unmap(cb->mapping->domain, sg_dma_address(sg),
+				sg_dma_len(sg));
+	return -EINVAL;
+}
+
 
 static int ipa_create_uc_smmu_mapping_sgt(struct sg_table *sgt,
 		unsigned long *iova)
@@ -580,6 +719,43 @@ bad_mapping:
 		iommu_unmap(cb->mapping->domain, sg_dma_address(sg),
 				sg_dma_len(sg));
 	return -EINVAL;
+}
+
+static void ipa_release_ap_smmu_mappings(enum ipa_client_type client)
+{
+	struct ipa_smmu_cb_ctx *cb = ipa3_get_smmu_ctx(IPA_SMMU_CB_AP);
+	int i, j, start, end;
+
+	if (IPA_CLIENT_IS_CONS(client)) {
+		start = IPA_WDI_TX_RING_RES;
+		if (ipa3_ctx->ipa_wdi3_over_gsi)
+			end = IPA_WDI_TX_DB_RES;
+		else
+			end = IPA_WDI_CE_DB_RES;
+	} else {
+		start = IPA_WDI_RX_RING_RES;
+		if (ipa3_ctx->ipa_wdi2 ||
+			ipa3_ctx->ipa_wdi3_over_gsi)
+			end = IPA_WDI_RX_COMP_RING_WP_RES;
+		else
+			end = IPA_WDI_RX_RING_RP_RES;
+	}
+
+	for (i = start; i <= end; i++) {
+		if (wdi_res[i].valid) {
+			for (j = 0; j < wdi_res[i].nents; j++) {
+				iommu_unmap(cb->mapping->domain,
+					wdi_res[i].res[j].iova,
+					wdi_res[i].res[j].size);
+				ipa3_ctx->wdi_map_cnt--;
+			}
+			kfree(wdi_res[i].res);
+			wdi_res[i].valid = false;
+		}
+	}
+
+	if (ipa3_ctx->wdi_map_cnt == 0)
+		cb->next_addr = cb->va_end;
 }
 
 static void ipa_release_uc_smmu_mappings(enum ipa_client_type client)
@@ -739,7 +915,37 @@ int ipa_create_uc_smmu_mapping(int res_idx, bool wlan_smmu_en,
 	return 0;
 }
 
-static int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
+void ipa3_release_wdi3_gsi_smmu_mappings(u8 dir)
+{
+	struct ipa_smmu_cb_ctx *cb = ipa3_get_smmu_ctx(IPA_SMMU_CB_AP);
+	int i, j, start, end;
+
+	if (dir == IPA_WDI3_TX_DIR) {
+		start = IPA_WDI_TX_RING_RES;
+		end = IPA_WDI_TX_DB_RES;
+	} else {
+		start = IPA_WDI_RX_RING_RES;
+		end = IPA_WDI_RX_COMP_RING_WP_RES;
+	}
+
+	for (i = start; i <= end; i++) {
+		if (wdi_res[i].valid) {
+			for (j = 0; j < wdi_res[i].nents; j++) {
+				iommu_unmap(cb->mapping->domain,
+					wdi_res[i].res[j].iova,
+					wdi_res[i].res[j].size);
+				ipa3_ctx->wdi_map_cnt--;
+			}
+			kfree(wdi_res[i].res);
+			wdi_res[i].valid = false;
+		}
+	}
+
+	if (ipa3_ctx->wdi_map_cnt == 0)
+		cb->next_addr = cb->va_end;
+}
+
+int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
 		phys_addr_t pa, struct sg_table *sgt, size_t len, bool device,
 		unsigned long *iova)
 {
@@ -757,9 +963,11 @@ static int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
 
 	/* no SMMU on WLAN but SMMU on IPA */
 	if (!wlan_smmu_en && !ipa3_ctx->s1_bypass_arr[IPA_SMMU_CB_AP]) {
-		if (ipa3_smmu_map_peer_buff(*iova, pa, len,
-						sgt, IPA_SMMU_CB_WLAN)) {
-			IPAERR("Fail to create mapping res %d\n", res_idx);
+		if (ipa_create_ap_smmu_mapping_pa(pa, len,
+				(res_idx == IPA_WDI_CE_DB_RES) ? true : false,
+					iova)) {
+			IPAERR("Fail to create mapping res %d\n",
+					res_idx);
 			return -EFAULT;
 		}
 		ipa_save_uc_smmu_mapping_pa(res_idx, pa, *iova, len);
@@ -771,10 +979,12 @@ static int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
 		case IPA_WDI_RX_RING_RP_RES:
 		case IPA_WDI_RX_COMP_RING_WP_RES:
 		case IPA_WDI_CE_DB_RES:
-			if (ipa3_smmu_map_peer_buff(*iova, pa, len, sgt,
-							IPA_SMMU_CB_WLAN)) {
+		case IPA_WDI_TX_DB_RES:
+			if (ipa_create_ap_smmu_mapping_pa(pa, len,
+				(res_idx == IPA_WDI_CE_DB_RES) ? true : false,
+						iova)) {
 				IPAERR("Fail to create mapping res %d\n",
-					res_idx);
+						res_idx);
 				return -EFAULT;
 			}
 			ipa_save_uc_smmu_mapping_pa(res_idx, pa, *iova, len);
@@ -783,10 +993,9 @@ static int ipa_create_gsi_smmu_mapping(int res_idx, bool wlan_smmu_en,
 		case IPA_WDI_RX_COMP_RING_RES:
 		case IPA_WDI_TX_RING_RES:
 		case IPA_WDI_CE_RING_RES:
-			if (ipa3_smmu_map_peer_reg(pa, true,
-							IPA_SMMU_CB_WLAN)) {
+			if (ipa_create_ap_smmu_mapping_sgt(sgt, iova)) {
 				IPAERR("Fail to create mapping res %d\n",
-					res_idx);
+						res_idx);
 				return -EFAULT;
 			}
 			ipa_save_uc_smmu_mapping_sgt(res_idx, sgt, *iova);
@@ -1280,6 +1489,8 @@ int ipa3_connect_gsi_wdi_pipe(struct ipa_wdi_in_params *in,
 	else
 		IPADBG("in->wdi_notify is null\n");
 
+	ipa3_enable_data_path(ipa_ep_idx);
+
 	if (!ep->skip_ep_cfg && IPA_CLIENT_IS_PROD(in->sys.client))
 		ipa3_install_dflt_flt_rules(ipa_ep_idx);
 
@@ -1310,7 +1521,7 @@ fail_alloc_evt_ring:
 ipa_cfg_ep_fail:
 	memset(&ipa3_ctx->ep[ipa_ep_idx], 0, sizeof(struct ipa3_ep_context));
 gsi_timeout:
-	ipa_release_uc_smmu_mappings(in->sys.client);
+	ipa_release_ap_smmu_mappings(in->sys.client);
 	IPA_ACTIVE_CLIENTS_DEC_EP(in->sys.client);
 fail:
 	return result;
@@ -1806,6 +2017,15 @@ int ipa3_connect_wdi_pipe(struct ipa_wdi_in_params *in,
 	else
 		IPADBG("in->wdi_notify is null\n");
 
+	if (IPA_CLIENT_IS_CONS(in->sys.client)) {
+		in->sys.ipa_ep_cfg.aggr.aggr_en = IPA_ENABLE_AGGR;
+		in->sys.ipa_ep_cfg.aggr.aggr = IPA_GENERIC;
+		in->sys.ipa_ep_cfg.aggr.aggr_pkt_limit = IPA_AGGR_PKT_LIMIT;
+		in->sys.ipa_ep_cfg.aggr.aggr_byte_limit =
+						IPA_AGGR_HARD_BYTE_LIMIT;
+		in->sys.ipa_ep_cfg.aggr.aggr_hard_byte_limit_en =
+						IPA_ENABLE_AGGR;
+	}
 	if (!ep->skip_ep_cfg) {
 		if (ipa3_cfg_ep(ipa_ep_idx, &in->sys.ipa_ep_cfg)) {
 			IPAERR("fail to configure EP.\n");
@@ -1870,14 +2090,17 @@ int ipa3_disconnect_gsi_wdi_pipe(u32 clnt_hdl)
 				result);
 		goto fail_dealloc_channel;
 	}
-	ipa_release_uc_smmu_mappings(clnt_hdl);
+	ipa_release_ap_smmu_mappings(clnt_hdl);
 
 	/* for AP+STA stats update */
 	if (ipa3_ctx->uc_wdi_ctx.stats_notify)
 		ipa3_ctx->uc_wdi_ctx.stats_notify = NULL;
 	else
 		IPADBG("uc_wdi_ctx.stats_notify already null\n");
-
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 ||
+		(ipa3_ctx->ipa_hw_type == IPA_HW_v4_1 &&
+		ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ))
+		ipa3_uc_debug_stats_dealloc(IPA_HW_PROTOCOL_WDI);
 	IPADBG("client (ep: %d) disconnected\n", clnt_hdl);
 
 fail_dealloc_channel:
@@ -1975,7 +2198,6 @@ int ipa3_enable_gsi_wdi_pipe(u32 clnt_hdl)
 	}
 
 	IPA_ACTIVE_CLIENTS_INC_EP(ipa3_get_client_mapping(clnt_hdl));
-	ipa3_enable_data_path(clnt_hdl);
 
 	memset(&ep_cfg_ctrl, 0, sizeof(struct ipa_ep_cfg_ctrl));
 	ipa3_cfg_ep_ctrl(ipa_ep_idx, &ep_cfg_ctrl);
@@ -1991,7 +2213,7 @@ int ipa3_disable_gsi_wdi_pipe(u32 clnt_hdl)
 	int result = 0;
 	struct ipa3_ep_context *ep;
 	struct ipa_ep_cfg_ctrl ep_cfg_ctrl;
-	u32 prod_hdl;
+	u32 cons_hdl;
 
 	IPADBG("ep=%d\n", clnt_hdl);
 
@@ -2012,23 +2234,28 @@ int ipa3_disable_gsi_wdi_pipe(u32 clnt_hdl)
 
 	/**
 	 * To avoid data stall during continuous SAP on/off before
-	 * setting delay to IPA Consumer pipe, remove delay and enable
-	 * holb on IPA Producer pipe
+	 * setting delay to IPA Consumer pipe (Client Producer),
+	 * remove delay and enable holb on IPA Producer pipe
 	 */
 	if (IPA_CLIENT_IS_PROD(ep->client)) {
 		IPADBG("Stopping PROD channel - hdl=%d clnt=%d\n",
-				clnt_hdl, ep->client);
+			clnt_hdl, ep->client);
 		/* remove delay on wlan-prod pipe*/
 		memset(&ep_cfg_ctrl, 0, sizeof(struct ipa_ep_cfg_ctrl));
 		ipa3_cfg_ep_ctrl(clnt_hdl, &ep_cfg_ctrl);
 
-		prod_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
-		if (ipa3_ctx->ep[prod_hdl].valid == 1) {
-			result = ipa3_disable_data_path(prod_hdl);
+		cons_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
+		if (cons_hdl == IPA_EP_NOT_ALLOCATED) {
+			IPAERR("Client %u is not mapped\n",
+				IPA_CLIENT_WLAN1_CONS);
+			goto gsi_timeout;
+		}
+		if (ipa3_ctx->ep[cons_hdl].valid == 1) {
+			result = ipa3_disable_data_path(cons_hdl);
 			if (result) {
 				IPAERR("disable data path failed\n");
 				IPAERR("res=%d clnt=%d\n",
-						result, prod_hdl);
+						result, cons_hdl);
 				goto gsi_timeout;
 			}
 		}
@@ -2128,7 +2355,7 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 	struct ipa3_ep_context *ep;
 	union IpaHwWdiCommonChCmdData_t disable;
 	struct ipa_ep_cfg_ctrl ep_cfg_ctrl;
-	u32 prod_hdl;
+	u32 cons_hdl;
 
 	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes ||
 	    ipa3_ctx->ep[clnt_hdl].valid == 0) {
@@ -2163,8 +2390,8 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 
 	/**
 	 * To avoid data stall during continuous SAP on/off before
-	 * setting delay to IPA Consumer pipe, remove delay and enable
-	 * holb on IPA Producer pipe
+	 * setting delay to IPA Consumer pipe (Client Producer),
+	 * remove delay and enable holb on IPA Producer pipe
 	 */
 	if (IPA_CLIENT_IS_PROD(ep->client)) {
 		IPADBG("Stopping PROD channel - hdl=%d clnt=%d\n",
@@ -2173,13 +2400,18 @@ int ipa3_disable_wdi_pipe(u32 clnt_hdl)
 		memset(&ep_cfg_ctrl, 0, sizeof(struct ipa_ep_cfg_ctrl));
 		ipa3_cfg_ep_ctrl(clnt_hdl, &ep_cfg_ctrl);
 
-		prod_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
-		if (ipa3_ctx->ep[prod_hdl].valid == 1) {
-			result = ipa3_disable_data_path(prod_hdl);
+		cons_hdl = ipa3_get_ep_mapping(IPA_CLIENT_WLAN1_CONS);
+		if (cons_hdl == IPA_EP_NOT_ALLOCATED) {
+			IPAERR("Client %u is not mapped\n",
+				IPA_CLIENT_WLAN1_CONS);
+			goto uc_timeout;
+		}
+		if (ipa3_ctx->ep[cons_hdl].valid == 1) {
+			result = ipa3_disable_data_path(cons_hdl);
 			if (result) {
 				IPAERR("disable data path failed\n");
 				IPAERR("res=%d clnt=%d\n",
-					result, prod_hdl);
+					result, cons_hdl);
 				result = -EPERM;
 				goto uc_timeout;
 			}
@@ -2222,6 +2454,7 @@ int ipa3_resume_gsi_wdi_pipe(u32 clnt_hdl)
 	struct ipa_ep_cfg_ctrl ep_cfg_ctrl;
 	struct gsi_chan_info chan_info;
 	union __packed gsi_channel_scratch gsi_scratch;
+	struct IpaHwOffloadStatsAllocCmdData_t *pcmd_t = NULL;
 
 	IPADBG("ep=%d\n", clnt_hdl);
 	ep = &ipa3_ctx->ep[clnt_hdl];
@@ -2244,6 +2477,25 @@ int ipa3_resume_gsi_wdi_pipe(u32 clnt_hdl)
 	if (result != GSI_STATUS_SUCCESS) {
 		IPAERR("gsi_start_channel failed %d\n", result);
 		ipa_assert();
+	}
+	pcmd_t = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_WDI];
+	/* start uC gsi dbg stats monitor */
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 ||
+		(ipa3_ctx->ipa_hw_type == IPA_HW_v4_1 &&
+		ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ)) {
+		if (IPA_CLIENT_IS_PROD(ep->client)) {
+			pcmd_t->ch_id_info[0].ch_id
+				= ep->gsi_chan_hdl;
+			pcmd_t->ch_id_info[0].dir
+				= DIR_PRODUCER;
+		} else {
+			pcmd_t->ch_id_info[1].ch_id
+				= ep->gsi_chan_hdl;
+			pcmd_t->ch_id_info[1].dir
+				= DIR_CONSUMER;
+		}
+		ipa3_uc_debug_stats_alloc(
+			ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_WDI]);
 	}
 	gsi_query_channel_info(ep->gsi_chan_hdl, &chan_info);
 	gsi_read_channel_scratch(ep->gsi_chan_hdl, &gsi_scratch);
@@ -2339,6 +2591,7 @@ int ipa3_suspend_gsi_wdi_pipe(u32 clnt_hdl)
 	int retry_cnt = 0;
 	struct gsi_chan_info chan_info;
 	union __packed gsi_channel_scratch gsi_scratch;
+	struct IpaHwOffloadStatsAllocCmdData_t *pcmd_t = NULL;
 
 	ipa_ep_idx = ipa3_get_ep_mapping(ipa3_get_client_mapping(clnt_hdl));
 	if (ipa_ep_idx < 0) {
@@ -2403,7 +2656,25 @@ retry_gsi_stop:
 				gsi_scratch.data.word3);
 		IPADBG("Scratch 3 = %x\n", gsi_scratch.data.word4);
 	}
-
+	pcmd_t = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_WDI];
+	/* stop uC gsi dbg stats monitor */
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 ||
+		(ipa3_ctx->ipa_hw_type == IPA_HW_v4_1 &&
+		ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ)) {
+		if (IPA_CLIENT_IS_PROD(ep->client)) {
+			pcmd_t->ch_id_info[0].ch_id
+				= 0xff;
+			pcmd_t->ch_id_info[0].dir
+				= DIR_PRODUCER;
+		} else {
+			pcmd_t->ch_id_info[1].ch_id
+				= 0xff;
+			pcmd_t->ch_id_info[1].dir
+				= DIR_CONSUMER;
+		}
+		ipa3_uc_debug_stats_alloc(
+			ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_WDI]);
+	}
 	if (disable_force_clear)
 		ipa3_disable_force_clear(clnt_hdl);
 	IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(clnt_hdl));

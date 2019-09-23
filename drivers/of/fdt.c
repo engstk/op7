@@ -82,6 +82,32 @@ void of_fdt_limit_memory(int limit)
 }
 
 /**
+ * of_fdt_get_ddrtype - Return the type of ddr (4/5) on the current device
+ *
+ * On match, returns a non-zero positive value which matches the ddr type.
+ * Otherwise returns -ENOENT.
+ */
+int of_fdt_get_ddrtype(void)
+{
+	int memory;
+	int len;
+	int ret;
+	fdt32_t *prop = NULL;
+
+	memory = fdt_path_offset(initial_boot_params, "/memory");
+	if (memory > 0)
+		prop = fdt_getprop_w(initial_boot_params, memory,
+				  "ddr_device_type", &len);
+
+	if (!prop || len != sizeof(u32))
+		return -ENOENT;
+
+	ret = fdt32_to_cpu(*prop);
+
+	return ret;
+}
+
+/**
  * of_fdt_is_compatible - Return true if given node from the given blob has
  * compat in its compatible list
  * @blob: A device tree blob
@@ -576,6 +602,52 @@ void *initial_boot_params;
 #ifdef CONFIG_OF_EARLY_FLATTREE
 
 static u32 of_fdt_crc32;
+
+/*
+ * Reserve memory via command line if needed.
+ */
+static int __init early_memory_reserve(char *p)
+{
+	phys_addr_t base, size;
+	int nomap;
+	char *endp = p;
+
+	while (1) {
+		base = memparse(endp, &endp);
+		if (base && (*endp == ',')) {
+			size = memparse(endp + 1, &endp);
+			if (size && (*endp == ',')) {
+				if (memcmp(endp + 1, "nomap", 5) == 0) {
+					nomap = 1;
+					endp += 6;
+				} else if (memcmp(endp + 1, "map", 3) == 0) {
+					nomap = 0;
+					endp += 4;
+				} else
+					break;
+
+				if (early_init_dt_reserve_memory_arch(base,
+					size, nomap) == 0)
+					pr_debug(
+					"Early reserved memory: region : base %pa, size %ld MiB\n",
+					&base, (unsigned long)size / SZ_1M);
+				else
+					pr_info(
+					"Early reserved memory: failed : base %pa, size %ld MiB\n",
+					&base, (unsigned long)size / SZ_1M);
+
+				if (*endp == ';')
+					endp++;
+				else
+					break;
+			} else
+				break;
+		} else
+			break;
+	}
+	return 0;
+}
+early_param("memrsv", early_memory_reserve);
 
 /**
  * res_mem_reserve_reg() - reserve all memory described in 'reg' property
