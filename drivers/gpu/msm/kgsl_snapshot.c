@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -335,10 +335,8 @@ int kgsl_snapshot_get_object(struct kgsl_snapshot *snapshot,
 
 	entry = kgsl_sharedmem_find(process, gpuaddr);
 
-	if (entry == NULL) {
-		KGSL_CORE_ERR("Unable to find GPU buffer 0x%016llX\n", gpuaddr);
+	if (entry == NULL)
 		return -EINVAL;
-	}
 
 	/* We can't freeze external memory, because we don't own it */
 	if (entry->memdesc.flags & KGSL_MEMFLAGS_USERMEM_MASK)
@@ -659,14 +657,20 @@ void kgsl_device_snapshot(struct kgsl_device *device,
 	/* increment the hang count for good book keeping */
 	device->snapshot_faultcount++;
 
-	/*
-	 * Overwrite a fault snapshot only if GMU is
-	 * enabled and we managed to recover from it.
-	 */
 	if (device->snapshot != NULL) {
-		if (!gmu_core_gpmu_isenabled(device) ||
-			!device->prioritize_unrecoverable ||
-				!device->snapshot->recovered)
+
+		/*
+		 * Snapshot over-write policy:
+		 * 1. By default, don't over-write the very first snapshot,
+		 *    be it a gmu or gpu fault.
+		 * 2. Never over-write existing snapshot on a gpu fault.
+		 * 3. Never over-write a snapshot that we didn't recover from.
+		 * 4. In order to over-write a new gmu fault snapshot with a
+		 *    previously recovered fault, then set the sysfs knob
+		 *    prioritize_recoverable to true.
+		 */
+		if (!device->prioritize_unrecoverable ||
+			!device->snapshot->recovered || !gmu_fault)
 			return;
 
 		/*
@@ -1133,9 +1137,15 @@ int kgsl_device_snapshot_init(struct kgsl_device *device)
 	device->snapshot = NULL;
 	device->snapshot_faultcount = 0;
 	device->force_panic = 0;
-	device->prioritize_unrecoverable = true;
 	device->snapshot_crashdumper = 1;
 	device->snapshot_legacy = 0;
+
+	/*
+	 * Set this to false so that we only ever keep the first snapshot around
+	 * If we want to over-write with a gmu snapshot, then set it to true
+	 * via sysfs
+	 */
+	device->prioritize_unrecoverable = false;
 
 	ret = kobject_init_and_add(&device->snapshot_kobj, &ktype_snapshot,
 		&device->dev->kobj, "snapshot");

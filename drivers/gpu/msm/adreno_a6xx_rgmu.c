@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -31,6 +31,8 @@
 #define GLM_SLEEP_TIMEOUT		10	/* ms */
 
 static const unsigned int a6xx_rgmu_registers[] = {
+	/*GPUCX_TCM */
+	0x1B400, 0x1B7FF,
 	/* GMU CX */
 	0x1F80F, 0x1F83D, 0x1F840, 0x1F8D8, 0x1F990, 0x1F99E, 0x1F9C0, 0x1F9CC,
 	/* GMU AO */
@@ -112,7 +114,7 @@ static int a6xx_rgmu_oob_set(struct adreno_device *adreno_dev,
 	struct rgmu_device *rgmu = KGSL_RGMU_DEVICE(device);
 	int ret, set, check;
 
-	if (!gmu_core_isenabled(device))
+	if (!gmu_core_gpmu_isenabled(device))
 		return 0;
 
 	set = BIT(req + 16);
@@ -151,7 +153,7 @@ static inline void a6xx_rgmu_oob_clear(struct adreno_device *adreno_dev,
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 
-	if (!gmu_core_isenabled(device))
+	if (!gmu_core_gpmu_isenabled(device))
 		return;
 
 	gmu_core_regwrite(device, A6XX_GMU_HOST2GMU_INTR_SET, BIT(req + 24));
@@ -215,8 +217,9 @@ static int a6xx_rgmu_ifpc_store(struct adreno_device *adreno_dev,
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct rgmu_device *rgmu = KGSL_RGMU_DEVICE(device);
 	unsigned int requested_idle_level;
+	int ret;
 
-	if (!gmu_core_isenabled(device) ||
+	if (!gmu_core_gpmu_isenabled(device) ||
 		!ADRENO_FEATURE(adreno_dev, ADRENO_IFPC))
 		return -EINVAL;
 
@@ -231,13 +234,15 @@ static int a6xx_rgmu_ifpc_store(struct adreno_device *adreno_dev,
 	mutex_lock(&device->mutex);
 
 	/* Power down the GPU before changing the idle level */
-	kgsl_pwrctrl_change_state(device, KGSL_STATE_SUSPEND);
-	rgmu->idle_level = requested_idle_level;
-	kgsl_pwrctrl_change_state(device, KGSL_STATE_SLUMBER);
+	ret = kgsl_pwrctrl_change_state(device, KGSL_STATE_SUSPEND);
+	if (!ret) {
+		rgmu->idle_level = requested_idle_level;
+		kgsl_pwrctrl_change_state(device, KGSL_STATE_SLUMBER);
+	}
 
 	mutex_unlock(&device->mutex);
 
-	return 0;
+	return ret;
 }
 
 static unsigned int a6xx_rgmu_ifpc_show(struct adreno_device *adreno_dev)
@@ -245,7 +250,8 @@ static unsigned int a6xx_rgmu_ifpc_show(struct adreno_device *adreno_dev)
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct rgmu_device *rgmu = KGSL_RGMU_DEVICE(device);
 
-	return gmu_core_isenabled(device) && rgmu->idle_level == GPU_HW_IFPC;
+	return gmu_core_gpmu_isenabled(device) &&
+			rgmu->idle_level == GPU_HW_IFPC;
 }
 
 
@@ -280,7 +286,7 @@ static int a6xx_rgmu_wait_for_lowest_idle(struct adreno_device *adreno_dev)
 	unsigned long t;
 	uint64_t ts1, ts2, ts3;
 
-	if (!gmu_core_isenabled(device) ||
+	if (!gmu_core_gpmu_isenabled(device) ||
 			rgmu->idle_level != GPU_HW_IFPC)
 		return 0;
 
@@ -434,6 +440,9 @@ static int a6xx_rgmu_fw_start(struct kgsl_device *device,
 		return -ETIMEDOUT;
 	}
 
+	/* Read the RGMU firmware version from registers */
+	gmu_core_regread(device, A6XX_GMU_GENERAL_0, &rgmu->ver);
+
 	return 0;
 }
 
@@ -481,7 +490,7 @@ static int a6xx_rgmu_gpu_pwrctrl(struct adreno_device *adreno_dev,
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	int ret = 0;
 
-	if (!gmu_core_isenabled(device))
+	if (!gmu_core_gpmu_isenabled(device))
 		return 0;
 
 	switch (mode) {
@@ -520,9 +529,6 @@ static int a6xx_rgmu_load_firmware(struct kgsl_device *device)
 	struct rgmu_device *rgmu = KGSL_RGMU_DEVICE(device);
 	const struct adreno_gpu_core *gpucore = adreno_dev->gpucore;
 	int ret;
-
-	if (!gmu_core_isenabled(device))
-		return 0;
 
 	/* RGMU fw already saved and verified so do nothing new */
 	if (rgmu->fw_hostptr)

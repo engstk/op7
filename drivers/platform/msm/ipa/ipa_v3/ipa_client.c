@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -36,6 +36,7 @@
 
 static int ipa3_is_xdci_channel_empty(struct ipa3_ep_context *ep,
 	bool *is_empty);
+static void ipa3_start_gsi_debug_monitor(u32 clnt_hdl);
 
 int ipa3_enable_data_path(u32 clnt_hdl)
 {
@@ -67,7 +68,8 @@ int ipa3_enable_data_path(u32 clnt_hdl)
 		 * if DPL client is not pulling the data
 		 * on other end from IPA hw.
 		 */
-		if (ep->client == IPA_CLIENT_USB_DPL_CONS)
+		if ((ep->client == IPA_CLIENT_USB_DPL_CONS) ||
+				(ep->client == IPA_CLIENT_MHI_DPL_CONS))
 			holb_cfg.en = IPA_HOLB_TMR_EN;
 		else
 			holb_cfg.en = IPA_HOLB_TMR_DIS;
@@ -184,14 +186,14 @@ int ipa3_reset_gsi_channel(u32 clnt_hdl)
 		goto reset_chan_fail;
 	}
 
-	if (!ep->keep_ipa_awake)
-		IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(clnt_hdl));
-
 	/* undo the aggr value if flag was set above*/
 	if (undo_aggr_value) {
 		fields.open_aggr_wrapper = false;
 		ipahal_write_reg_fields(IPA_CLKON_CFG, &fields);
 	}
+
+	if (!ep->keep_ipa_awake)
+		IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(clnt_hdl));
 
 	IPADBG("exit\n");
 	return 0;
@@ -251,6 +253,70 @@ static bool ipa3_is_legal_params(struct ipa_request_gsi_channel_params *params)
 		return false;
 	else
 		return true;
+}
+
+static void ipa3_start_gsi_debug_monitor(u32 clnt_hdl)
+{
+	struct IpaHwOffloadStatsAllocCmdData_t *gsi_info;
+	struct ipa3_ep_context *ep;
+	enum ipa_client_type client_type;
+
+	IPADBG("entry\n");
+	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes ||
+		ipa3_ctx->ep[clnt_hdl].valid == 0) {
+		IPAERR("Bad parameters.\n");
+		return;
+	}
+
+	ep = &ipa3_ctx->ep[clnt_hdl];
+	client_type = ipa3_get_client_mapping(clnt_hdl);
+
+	/* start uC gsi dbg stats monitor */
+	if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5 ||
+		(ipa3_ctx->ipa_hw_type == IPA_HW_v4_1 &&
+		ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ)) {
+		switch (client_type) {
+		case IPA_CLIENT_MHI_PRIME_TETH_PROD:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_MHIP];
+			gsi_info->ch_id_info[0].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[0].dir = DIR_PRODUCER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		case IPA_CLIENT_MHI_PRIME_TETH_CONS:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_MHIP];
+			gsi_info->ch_id_info[1].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[1].dir = DIR_CONSUMER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		case IPA_CLIENT_MHI_PRIME_RMNET_PROD:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_MHIP];
+			gsi_info->ch_id_info[2].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[2].dir = DIR_PRODUCER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		case IPA_CLIENT_MHI_PRIME_RMNET_CONS:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_MHIP];
+			gsi_info->ch_id_info[3].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[3].dir = DIR_CONSUMER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		case IPA_CLIENT_USB_PROD:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_USB];
+			gsi_info->ch_id_info[0].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[0].dir = DIR_PRODUCER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		case IPA_CLIENT_USB_CONS:
+			gsi_info = &ipa3_ctx->gsi_info[IPA_HW_PROTOCOL_USB];
+			gsi_info->ch_id_info[1].ch_id = ep->gsi_chan_hdl;
+			gsi_info->ch_id_info[1].dir = DIR_CONSUMER;
+			ipa3_uc_debug_stats_alloc(*gsi_info);
+			break;
+		default:
+			IPADBG("client_type %d not supported\n",
+				client_type);
+		}
+	}
 }
 
 int ipa3_smmu_map_peer_reg(phys_addr_t phys_addr, bool map,
@@ -372,66 +438,83 @@ int ipa3_smmu_map_peer_buff(u64 iova, u32 size, bool map, struct sg_table *sgt,
 	return 0;
 }
 
-void ipa3_register_lock_unlock_callback(int (*client_cb)(bool is_lock),
-						u32 ipa_ep_idx)
+static enum ipa_client_cb_type ipa_get_client_cb_type(
+					enum ipa_client_type client_type)
 {
-	struct ipa3_ep_context *ep;
+	enum ipa_client_cb_type client_cb;
+
+	if (client_type == IPA_CLIENT_USB_PROD ||
+			client_type == IPA_CLIENT_USB_CONS) {
+		IPADBG("USB Client registered\n");
+		client_cb = IPA_USB_CLNT;
+	} else if (client_type == IPA_CLIENT_MHI_PROD ||
+			client_type == IPA_CLIENT_MHI_CONS) {
+		IPADBG("MHI Client registered\n");
+		client_cb = IPA_MHI_CLNT;
+	} else {
+		IPAERR("Invalid IPA client\n");
+		client_cb = IPA_MAX_CLNT;
+	}
+
+	return client_cb;
+}
+void ipa3_register_client_callback(int (*client_cb)(bool is_lock),
+				bool (*teth_port_state)(void),
+				enum ipa_client_type client_type)
+{
+	enum ipa_client_cb_type client;
 
 	IPADBG("entry\n");
 
-	ep = &ipa3_ctx->ep[ipa_ep_idx];
-
-	if (!ep->valid) {
-		IPAERR("Invalid EP\n");
+	client = ipa_get_client_cb_type(client_type);
+	if (client == IPA_MAX_CLNT)
 		return;
-	}
 
 	if (client_cb == NULL) {
 		IPAERR("Bad Param");
 		return;
 	}
 
-	ep->client_lock_unlock = client_cb;
+	if (!ipa3_ctx->client_lock_unlock[client])
+		ipa3_ctx->client_lock_unlock[client] = client_cb;
+	if (!ipa3_ctx->get_teth_port_state[client])
+		ipa3_ctx->get_teth_port_state[client] = teth_port_state;
 	IPADBG("exit\n");
 }
 
-void ipa3_deregister_lock_unlock_callback(u32 ipa_ep_idx)
+void ipa3_deregister_client_callback(enum ipa_client_type client_type)
 {
-	struct ipa3_ep_context *ep;
+	enum ipa_client_cb_type client_cb;
 
 	IPADBG("entry\n");
 
-	ep = &ipa3_ctx->ep[ipa_ep_idx];
-
-	if (!ep->valid) {
-		IPAERR("Invalid EP\n");
+	client_cb = ipa_get_client_cb_type(client_type);
+	if (client_cb == IPA_MAX_CLNT)
 		return;
-	}
 
-	if (ep->client_lock_unlock == NULL) {
+	if (ipa3_ctx->client_lock_unlock[client_cb] == NULL &&
+		ipa3_ctx->get_teth_port_state[client_cb] == NULL) {
 		IPAERR("client_lock_unlock is already NULL");
 		return;
 	}
 
-	ep->client_lock_unlock = NULL;
+	ipa3_ctx->client_lock_unlock[client_cb] = NULL;
+	ipa3_ctx->get_teth_port_state[client_cb] = NULL;
 	IPADBG("exit\n");
 }
 
-static void client_lock_unlock_cb(u32 ipa_ep_idx, bool is_lock)
+static void client_lock_unlock_cb(enum ipa_client_type client, bool is_lock)
 {
-	struct ipa3_ep_context *ep;
+	enum ipa_client_cb_type client_cb;
 
 	IPADBG("entry\n");
 
-	ep = &ipa3_ctx->ep[ipa_ep_idx];
-
-	if (!ep->valid) {
-		IPAERR("Invalid EP\n");
+	client_cb = ipa_get_client_cb_type(client);
+	if (client_cb == IPA_MAX_CLNT)
 		return;
-	}
 
-	if (ep->client_lock_unlock)
-		ep->client_lock_unlock(is_lock);
+	if (ipa3_ctx->client_lock_unlock[client_cb])
+		ipa3_ctx->client_lock_unlock[client_cb](is_lock);
 
 	IPADBG("exit\n");
 }
@@ -738,6 +821,7 @@ int ipa3_xdci_start(u32 clnt_hdl, u8 xferrscidx, bool xferrscidx_valid)
 		IPAERR("Error starting channel: %d\n", gsi_res);
 		goto write_chan_scratch_fail;
 	}
+	ipa3_start_gsi_debug_monitor(clnt_hdl);
 	if (!ep->keep_ipa_awake)
 		IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(clnt_hdl));
 
@@ -749,7 +833,7 @@ write_chan_scratch_fail:
 	return result;
 }
 
-static int ipa3_get_gsi_chan_info(struct gsi_chan_info *gsi_chan_info,
+int ipa3_get_gsi_chan_info(struct gsi_chan_info *gsi_chan_info,
 	unsigned long chan_hdl)
 {
 	enum gsi_status gsi_res;
@@ -825,6 +909,11 @@ int ipa3_enable_force_clear(u32 request_id, bool throttle_source,
 	struct ipa_enable_force_clear_datapath_req_msg_v01 req;
 	int result;
 
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPADBG("APQ platform - ignore force clear\n");
+		return 0;
+	}
+
 	memset(&req, 0, sizeof(req));
 	req.request_id = request_id;
 	req.source_pipe_bitmask = source_pipe_bitmask;
@@ -846,6 +935,11 @@ int ipa3_disable_force_clear(u32 request_id)
 {
 	struct ipa_disable_force_clear_datapath_req_msg_v01 req;
 	int result;
+
+	if (ipa3_ctx->platform_type == IPA_PLAT_TYPE_APQ) {
+		IPADBG("APQ platform - ignore force clear\n");
+		return 0;
+	}
 
 	memset(&req, 0, sizeof(req));
 	req.request_id = request_id;
@@ -1101,7 +1195,7 @@ int ipa3_set_reset_client_prod_pipe_delay(bool set_reset,
 	ep = &ipa3_ctx->ep[pipe_idx];
 
 	/* Setting delay on USB_PROD with skip_ep_cfg */
-	client_lock_unlock_cb(pipe_idx, true);
+	client_lock_unlock_cb(client, true);
 	if (ep->valid && ep->skip_ep_cfg) {
 		ep->ep_delay_set = ep_ctrl.ipa_ep_delay;
 		result = ipa3_cfg_ep_ctrl(pipe_idx, &ep_ctrl);
@@ -1111,10 +1205,56 @@ int ipa3_set_reset_client_prod_pipe_delay(bool set_reset,
 		else
 			IPADBG("client (ep: %d) success\n", pipe_idx);
 	}
-	client_lock_unlock_cb(pipe_idx, false);
+	client_lock_unlock_cb(client, false);
 	return result;
 }
 
+static bool ipa3_get_teth_port_status(enum ipa_client_type client)
+{
+	enum ipa_client_cb_type client_cb;
+
+	client_cb = ipa_get_client_cb_type(client);
+	if (client_cb == IPA_MAX_CLNT)
+		return false;
+	if (ipa3_ctx->get_teth_port_state[client_cb])
+		return ipa3_ctx->get_teth_port_state[client_cb]();
+	return false;
+}
+
+/*
+ * Start/stop the CLIENT PROD pipes in SSR scenarios
+ */
+
+int ipa3_start_stop_client_prod_gsi_chnl(enum ipa_client_type client,
+		bool start_chnl)
+{
+	int result = 0;
+	int pipe_idx;
+	struct ipa3_ep_context *ep;
+
+	if (IPA_CLIENT_IS_CONS(client)) {
+		IPAERR("client (%d) not PROD\n", client);
+		return -EINVAL;
+	}
+
+	pipe_idx = ipa3_get_ep_mapping(client);
+
+	if (pipe_idx == IPA_EP_NOT_ALLOCATED) {
+		IPAERR("client (%d) not valid\n", client);
+		return -EINVAL;
+	}
+
+	client_lock_unlock_cb(client, true);
+	ep = &ipa3_ctx->ep[pipe_idx];
+	if (ep->valid && ep->skip_ep_cfg && ipa3_get_teth_port_status(client)) {
+		if (start_chnl)
+			result = ipa3_start_gsi_channel(pipe_idx);
+		else
+			result = ipa3_stop_gsi_channel(pipe_idx);
+	}
+	client_lock_unlock_cb(client, false);
+	return result;
+}
 int ipa3_set_reset_client_cons_pipe_sus_holb(bool set_reset,
 		enum ipa_client_type client)
 {
@@ -1144,7 +1284,7 @@ int ipa3_set_reset_client_cons_pipe_sus_holb(bool set_reset,
 
 	ep = &ipa3_ctx->ep[pipe_idx];
 	/* Setting sus/holb on MHI_CONS with skip_ep_cfg */
-	client_lock_unlock_cb(pipe_idx, true);
+	client_lock_unlock_cb(client, true);
 	if (ep->valid && ep->skip_ep_cfg) {
 		if (ipa3_ctx->ipa_hw_type < IPA_HW_v4_0)
 			ipahal_write_reg_n_fields(
@@ -1162,8 +1302,14 @@ int ipa3_set_reset_client_cons_pipe_sus_holb(bool set_reset,
 		ipahal_write_reg_n_fields(
 			IPA_ENDP_INIT_HOL_BLOCK_EN_n,
 			pipe_idx, &ep_holb);
+
+		/* IPA4.5 issue requires HOLB_EN to be written twice */
+		if (ipa3_ctx->ipa_hw_type >= IPA_HW_v4_5)
+			ipahal_write_reg_n_fields(
+				IPA_ENDP_INIT_HOL_BLOCK_EN_n,
+				pipe_idx, &ep_holb);
 	}
-	client_lock_unlock_cb(pipe_idx, false);
+	client_lock_unlock_cb(client, false);
 	return 0;
 }
 
@@ -1437,6 +1583,7 @@ int ipa3_xdci_suspend(u32 ul_clnt_hdl, u32 dl_clnt_hdl,
 
 start_dl_and_exit:
 	gsi_start_channel(dl_ep->gsi_chan_hdl);
+	ipa3_start_gsi_debug_monitor(dl_clnt_hdl);
 unsuspend_dl_and_exit:
 	if (ipa3_ctx->ipa_hw_type < IPA_HW_v4_0) {
 		/* Unsuspend the DL EP */
@@ -1454,6 +1601,7 @@ int ipa3_start_gsi_channel(u32 clnt_hdl)
 	struct ipa3_ep_context *ep;
 	int result = -EFAULT;
 	enum gsi_status gsi_res;
+	enum ipa_client_type client_type;
 
 	IPADBG("entry\n");
 	if (clnt_hdl >= ipa3_ctx->ipa_num_pipes  ||
@@ -1463,18 +1611,19 @@ int ipa3_start_gsi_channel(u32 clnt_hdl)
 	}
 
 	ep = &ipa3_ctx->ep[clnt_hdl];
-
+	client_type = ipa3_get_client_mapping(clnt_hdl);
 	if (!ep->keep_ipa_awake)
-		IPA_ACTIVE_CLIENTS_INC_EP(ipa3_get_client_mapping(clnt_hdl));
+		IPA_ACTIVE_CLIENTS_INC_EP(client_type);
 
 	gsi_res = gsi_start_channel(ep->gsi_chan_hdl);
 	if (gsi_res != GSI_STATUS_SUCCESS) {
 		IPAERR("Error starting channel: %d\n", gsi_res);
 		goto start_chan_fail;
 	}
+	ipa3_start_gsi_debug_monitor(clnt_hdl);
 
 	if (!ep->keep_ipa_awake)
-		IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(clnt_hdl));
+		IPA_ACTIVE_CLIENTS_DEC_EP(client_type);
 
 	IPADBG("exit\n");
 	return 0;
@@ -1519,12 +1668,14 @@ int ipa3_xdci_resume(u32 ul_clnt_hdl, u32 dl_clnt_hdl, bool is_dpl)
 	gsi_res = gsi_start_channel(dl_ep->gsi_chan_hdl);
 	if (gsi_res != GSI_STATUS_SUCCESS)
 		IPAERR("Error starting DL channel: %d\n", gsi_res);
+	ipa3_start_gsi_debug_monitor(dl_clnt_hdl);
 
 	/* Start UL channel */
 	if (!is_dpl) {
 		gsi_res = gsi_start_channel(ul_ep->gsi_chan_hdl);
 		if (gsi_res != GSI_STATUS_SUCCESS)
 			IPAERR("Error starting UL channel: %d\n", gsi_res);
+		ipa3_start_gsi_debug_monitor(ul_clnt_hdl);
 	}
 
 	IPA_ACTIVE_CLIENTS_DEC_EP(ipa3_get_client_mapping(dl_clnt_hdl));

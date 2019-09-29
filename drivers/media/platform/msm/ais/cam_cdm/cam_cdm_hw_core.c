@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -38,6 +38,8 @@
 
 static void cam_hw_cdm_work(struct work_struct *work);
 
+static struct cam_cdm_debugfs_entry debugfs_entry;
+
 /* DT match table entry for all CDM variants*/
 static const struct of_device_id msm_cam_hw_cdm_dt_match[] = {
 	{
@@ -66,6 +68,31 @@ int cam_hw_cdm_bl_fifo_pending_bl_rb(struct cam_hw_info *cdm_hw,
 		rc = -EIO;
 	}
 
+	return rc;
+}
+
+static int cam_hw_cdm_create_debugfs_entry(void)
+{
+	int rc = 0;
+
+	debugfs_entry.dentry = debugfs_create_dir("camera_cdm", NULL);
+	if (!debugfs_entry.dentry)
+		return -ENOMEM;
+
+	if (!debugfs_create_bool("dump_register",
+		0644,
+		debugfs_entry.dentry,
+		&debugfs_entry.dump_register)) {
+		CAM_ERR(CAM_CDM,
+			"failed to create dump_register entry");
+		rc = -ENOMEM;
+		goto err;
+	}
+
+	return rc;
+err:
+	debugfs_remove_recursive(debugfs_entry.dentry);
+	debugfs_entry.dentry = NULL;
 	return rc;
 }
 
@@ -185,6 +212,9 @@ void cam_hw_cdm_dump_core_debug_registers(
 	struct cam_hw_info *cdm_hw)
 {
 	uint32_t dump_reg, core_dbg, loop_cnt;
+
+	if (!debugfs_entry.dump_register)
+		return;
 
 	mutex_lock(&cdm_hw->hw_mutex);
 	cam_cdm_read_hw_reg(cdm_hw, CDM_CFG_CORE_EN, &dump_reg);
@@ -482,6 +512,14 @@ int cam_hw_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 
 		if ((!rc) && (hw_vaddr_ptr) && (len) &&
 			(len >= cdm_cmd->cmd[i].offset)) {
+
+			if ((len - cdm_cmd->cmd[i].offset) <
+				cdm_cmd->cmd[i].len) {
+				CAM_ERR(CAM_CDM, "Not enough buffer");
+				rc = -EINVAL;
+				break;
+			}
+
 			CAM_DBG(CAM_CDM, "Got the HW VA");
 			if (core->bl_tag >=
 				(CAM_CDM_HWFIFO_SIZE - 1))
@@ -509,8 +547,8 @@ int cam_hw_cdm_submit_bl(struct cam_hw_info *cdm_hw,
 
 		if (!rc) {
 			CAM_DBG(CAM_CDM,
-				"write BL success for cnt=%d with tag=%d",
-				i, core->bl_tag);
+				"write BL success for cnt=%d with tag=%d total_cnt=%d",
+				i, core->bl_tag, req->data->cmd_arrary_count);
 
 			CAM_DBG(CAM_CDM, "Now commit the BL");
 			if (cam_hw_cdm_commit_bl_write(cdm_hw)) {
@@ -550,35 +588,33 @@ static void cam_hw_cdm_work(struct work_struct *work)
 		cdm_hw = payload->hw;
 		core = (struct cam_cdm *)cdm_hw->core_info;
 
-		CAM_DBG(CAM_CDM, "IRQ status=%x", payload->irq_status);
+		CAM_DBG(CAM_CDM, "IRQ status=0x%x", payload->irq_status);
 		if (payload->irq_status &
 			CAM_CDM_IRQ_STATUS_INFO_INLINE_IRQ_MASK) {
-			struct cam_cdm_bl_cb_request_entry *node;
+			struct cam_cdm_bl_cb_request_entry *node, *tnode;
 
-			CAM_DBG(CAM_CDM, "inline IRQ data=%x",
+			CAM_DBG(CAM_CDM, "inline IRQ data=0x%x",
 				payload->irq_data);
 			mutex_lock(&cdm_hw->hw_mutex);
-			node = cam_cdm_find_request_by_bl_tag(
-					payload->irq_data,
-					&core->bl_request_list);
-			if (node) {
+			list_for_each_entry_safe(node, tnode,
+					&core->bl_request_list, entry) {
 				if (node->request_type ==
 					CAM_HW_CDM_BL_CB_CLIENT) {
 					cam_cdm_notify_clients(cdm_hw,
 						CAM_CDM_CB_STATUS_BL_SUCCESS,
 						(void *)node);
 				} else if (node->request_type ==
-						CAM_HW_CDM_BL_CB_INTERNAL) {
+					CAM_HW_CDM_BL_CB_INTERNAL) {
 					CAM_ERR(CAM_CDM,
 						"Invalid node=%pK %d", node,
 						node->request_type);
 				}
 				list_del_init(&node->entry);
+				if (node->bl_tag == payload->irq_data) {
+					kfree(node);
+					break;
+				}
 				kfree(node);
-			} else {
-				CAM_ERR(CAM_CDM,
-					"Inval node, inline_irq st=%x data=%x",
-					payload->irq_status, payload->irq_data);
 			}
 			mutex_unlock(&cdm_hw->hw_mutex);
 		}
@@ -684,7 +720,7 @@ irqreturn_t cam_hw_cdm_irq(int irq_num, void *data)
 			CAM_ERR(CAM_CDM, "Failed to Write CDM HW IRQ cmd");
 		work_status = queue_work(cdm_core->work_queue, &payload->work);
 		if (work_status == false) {
-			CAM_ERR(CAM_CDM, "Failed to queue work for irq=%x",
+			CAM_ERR(CAM_CDM, "Failed to queue work for irq=0x%x",
 				payload->irq_status);
 			kfree(payload);
 		}
@@ -949,6 +985,7 @@ int cam_hw_cdm_probe(struct platform_device *pdev)
 	ahb_vote.type = CAM_VOTE_ABSOLUTE;
 	ahb_vote.vote.level = CAM_SVS_VOTE;
 	axi_vote.compressed_bw = CAM_CPAS_DEFAULT_AXI_BW;
+	axi_vote.compressed_bw_ab = CAM_CPAS_DEFAULT_AXI_BW;
 	axi_vote.uncompressed_bw = CAM_CPAS_DEFAULT_AXI_BW;
 	rc = cam_cpas_start(cdm_core->cpas_handle, &ahb_vote, &axi_vote);
 	if (rc) {
@@ -1013,6 +1050,7 @@ int cam_hw_cdm_probe(struct platform_device *pdev)
 	}
 	cdm_hw->open_count--;
 	mutex_unlock(&cdm_hw->hw_mutex);
+	cam_hw_cdm_create_debugfs_entry();
 
 	CAM_DBG(CAM_CDM, "CDM%d probe successful", cdm_hw_intf->hw_idx);
 

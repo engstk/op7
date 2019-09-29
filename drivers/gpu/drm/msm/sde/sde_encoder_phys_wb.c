@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2019 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,7 +32,7 @@
 
 #define TO_S15D16(_x_)	((_x_) << 7)
 
-static const u32 cwb_irq_tbl[PINGPONG_MAX] = {SDE_NONE, SDE_NONE,
+static const u32 cwb_irq_tbl[PINGPONG_MAX] = {SDE_NONE, INTR_IDX_PP1_OVFL,
 	INTR_IDX_PP2_OVFL, INTR_IDX_PP3_OVFL, INTR_IDX_PP4_OVFL,
 	INTR_IDX_PP5_OVFL, SDE_NONE, SDE_NONE};
 
@@ -147,12 +147,13 @@ static void sde_encoder_phys_wb_set_qos_remap(
 	qos_params.xin_id = hw_wb->caps->xin_id;
 	qos_params.clk_ctrl = hw_wb->caps->clk_ctrl;
 	qos_params.num = hw_wb->idx - WB_0;
-	qos_params.is_rt = sde_crtc_get_client_type(crtc) != NRT_CLIENT;
+	qos_params.client_type = phys_enc->in_clone_mode ?
+					VBIF_CWB_CLIENT : VBIF_NRT_CLIENT;
 
-	SDE_DEBUG("[qos_remap] wb:%d vbif:%d xin:%d rt:%d\n",
+	SDE_DEBUG("[qos_remap] wb:%d vbif:%d xin:%d rt:%d clone:%d\n",
 			qos_params.num,
 			qos_params.vbif_idx,
-			qos_params.xin_id, qos_params.is_rt);
+			qos_params.xin_id, qos_params.client_type);
 
 	sde_vbif_set_qos_remap(phys_enc->sde_kms, &qos_params);
 }
@@ -205,11 +206,19 @@ static void sde_encoder_phys_wb_set_qos(struct sde_encoder_phys *phys_enc)
 	qos_cfg.danger_safe_en = true;
 	qos_cfg.danger_lut =
 		catalog->perf.danger_lut_tbl[SDE_QOS_LUT_USAGE_NRT];
-	qos_cfg.safe_lut =
-		(u32) _sde_encoder_phys_wb_get_qos_lut(
+
+	if (phys_enc->in_clone_mode)
+		qos_cfg.safe_lut = (u32) _sde_encoder_phys_wb_get_qos_lut(
+			&catalog->perf.sfe_lut_tbl[SDE_QOS_LUT_USAGE_CWB], 0);
+	else
+		qos_cfg.safe_lut = (u32) _sde_encoder_phys_wb_get_qos_lut(
 			&catalog->perf.sfe_lut_tbl[SDE_QOS_LUT_USAGE_NRT], 0);
-	qos_cfg.creq_lut =
-		_sde_encoder_phys_wb_get_qos_lut(
+
+	if (phys_enc->in_clone_mode)
+		qos_cfg.creq_lut = _sde_encoder_phys_wb_get_qos_lut(
+			&catalog->perf.qos_lut_tbl[SDE_QOS_LUT_USAGE_CWB], 0);
+	else
+		qos_cfg.creq_lut = _sde_encoder_phys_wb_get_qos_lut(
 			&catalog->perf.qos_lut_tbl[SDE_QOS_LUT_USAGE_NRT], 0);
 
 	if (hw_wb->ops.setup_danger_safe_lut)
@@ -873,7 +882,7 @@ static void _sde_encoder_phys_wb_update_cwb_flush(
 	dspp_out = (cwb_capture_mode == CAPTURE_DSPP_OUT);
 	need_merge = (crtc->num_mixers > 1) ? true : false;
 
-	if (src_pp_idx > LM_0 ||  ((cwb_idx + crtc->num_mixers) > CWB_MAX)) {
+	if (src_pp_idx > CWB_0 ||  ((cwb_idx + crtc->num_mixers) > CWB_MAX)) {
 		SDE_ERROR("invalid hw config for CWB\n");
 		return;
 	}
@@ -1063,7 +1072,7 @@ static void _sde_encoder_phys_wb_frame_done_helper(void *arg, bool frame_error)
 		phys_enc->parent_ops.handle_frame_done(phys_enc->parent,
 				phys_enc, event);
 
-	if (phys_enc->parent_ops.handle_vblank_virt)
+	if (phys_enc->parent_ops.handle_vblank_virt && !phys_enc->in_clone_mode)
 		phys_enc->parent_ops.handle_vblank_virt(phys_enc->parent,
 				phys_enc);
 
@@ -1569,7 +1578,7 @@ static void sde_encoder_phys_wb_disable(struct sde_encoder_phys *phys_enc)
 		goto exit;
 	}
 
-	if (sde_encoder_helper_reset_mixers(phys_enc, wb_enc->fb_disable))
+	if (sde_encoder_helper_reset_mixers(phys_enc, NULL))
 		goto exit;
 
 	phys_enc->enable_state = SDE_ENC_DISABLING;
@@ -1585,6 +1594,8 @@ static void sde_encoder_phys_wb_disable(struct sde_encoder_phys *phys_enc)
 exit:
 	phys_enc->enable_state = SDE_ENC_DISABLED;
 	wb_enc->crtc = NULL;
+	phys_enc->hw_cdm = NULL;
+	phys_enc->hw_ctl = NULL;
 }
 
 /**
@@ -1810,6 +1821,16 @@ struct sde_encoder_phys *sde_encoder_phys_wb_init(
 	irq->intr_idx = INTR_IDX_WB_DONE;
 	irq->cb.arg = wb_enc;
 	irq->cb.func = sde_encoder_phys_wb_done_irq;
+
+	irq = &phys_enc->irq[INTR_IDX_PP1_OVFL];
+	INIT_LIST_HEAD(&irq->cb.list);
+	irq->name = "pp1_overflow";
+	irq->hw_idx = CWB_1;
+	irq->irq_idx = -1;
+	irq->intr_type = SDE_IRQ_TYPE_CWB_OVERFLOW;
+	irq->intr_idx = INTR_IDX_PP1_OVFL;
+	irq->cb.arg = wb_enc;
+	irq->cb.func = sde_encoder_phys_cwb_ovflow;
 
 	irq = &phys_enc->irq[INTR_IDX_PP2_OVFL];
 	INIT_LIST_HEAD(&irq->cb.list);

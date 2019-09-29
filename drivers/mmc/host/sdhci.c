@@ -120,9 +120,9 @@ void sdhci_dumpregs(struct sdhci_host *host)
 	SDHCI_DUMP("Int enab:  0x%08x | Sig enab: 0x%08x\n",
 	       sdhci_readl(host, SDHCI_INT_ENABLE),
 	       sdhci_readl(host, SDHCI_SIGNAL_ENABLE));
-	SDHCI_DUMP("AC12 err:  0x%08x | Slot int: 0x%08x\n",
-		   sdhci_readw(host, SDHCI_ACMD12_ERR),
-	       sdhci_readw(host, SDHCI_SLOT_INT_STATUS));
+	SDHCI_DUMP("ACmd stat: 0x%08x | Slot int: 0x%08x\n",
+		   sdhci_readw(host, SDHCI_AUTO_CMD_STATUS),
+		   sdhci_readw(host, SDHCI_SLOT_INT_STATUS));
 	SDHCI_DUMP("Caps:      0x%08x | Caps_1:   0x%08x\n",
 	       sdhci_readl(host, SDHCI_CAPABILITIES),
 	       sdhci_readl(host, SDHCI_CAPABILITIES_1));
@@ -152,6 +152,7 @@ void sdhci_dumpregs(struct sdhci_host *host)
 	}
 
 	host->mmc->err_occurred = true;
+	host->mmc->last_failed_rq_time = ktime_get();
 
 	if (host->ops->dump_vendor_regs)
 		host->ops->dump_vendor_regs(host);
@@ -316,8 +317,6 @@ static void sdhci_do_reset(struct sdhci_host *host, u8 mask)
 		/* Resetting the controller clears many */
 		host->preset_enabled = false;
 	}
-	if (host->is_crypto_en)
-		host->crypto_reset_reqd = true;
 }
 
 static void sdhci_set_default_irqs(struct sdhci_host *host)
@@ -326,7 +325,7 @@ static void sdhci_set_default_irqs(struct sdhci_host *host)
 		    SDHCI_INT_DATA_CRC | SDHCI_INT_DATA_TIMEOUT |
 		    SDHCI_INT_INDEX | SDHCI_INT_END_BIT | SDHCI_INT_CRC |
 		    SDHCI_INT_TIMEOUT | SDHCI_INT_DATA_END |
-		    SDHCI_INT_RESPONSE | SDHCI_INT_ACMD12ERR;
+		    SDHCI_INT_RESPONSE | SDHCI_INT_AUTO_CMD_ERR;
 
 	if (host->tuning_mode == SDHCI_TUNING_MODE_2 ||
 	    host->tuning_mode == SDHCI_TUNING_MODE_3)
@@ -895,6 +894,11 @@ static void sdhci_set_transfer_irqs(struct sdhci_host *host)
 	else
 		host->ier = (host->ier & ~dma_irqs) | pio_irqs;
 
+	if (host->flags & (SDHCI_AUTO_CMD23 | SDHCI_AUTO_CMD12))
+		host->ier |= SDHCI_INT_AUTO_CMD_ERR;
+	else
+		host->ier &= ~SDHCI_INT_AUTO_CMD_ERR;
+
 	sdhci_writel(host, host->ier, SDHCI_INT_ENABLE);
 	sdhci_writel(host, host->ier, SDHCI_SIGNAL_ENABLE);
 }
@@ -1140,8 +1144,7 @@ static bool sdhci_needs_reset(struct sdhci_host *host, struct mmc_request *mrq)
 	return (!(host->flags & SDHCI_DEVICE_DEAD) &&
 		((mrq->cmd && mrq->cmd->error) ||
 		 (mrq->sbc && mrq->sbc->error) ||
-		 (mrq->data && ((mrq->data->error && !mrq->data->stop) ||
-				(mrq->data->stop && mrq->data->stop->error))) ||
+		 (mrq->data && mrq->data->stop && mrq->data->stop->error) ||
 		 (host->quirks & SDHCI_QUIRK_RESET_AFTER_REQUEST)));
 }
 
@@ -1193,6 +1196,16 @@ static void sdhci_finish_data(struct sdhci_host *host)
 	host->data = NULL;
 	host->data_cmd = NULL;
 
+	/*
+	 * The controller needs a reset of internal state machines upon error
+	 * conditions.
+	 */
+	if (data->error) {
+		if (!host->cmd || host->cmd == data_cmd)
+			sdhci_do_reset(host, SDHCI_RESET_CMD);
+		sdhci_do_reset(host, SDHCI_RESET_DATA);
+	}
+
 	if ((host->flags & (SDHCI_REQ_USE_DMA | SDHCI_USE_ADMA)) ==
 	    (SDHCI_REQ_USE_DMA | SDHCI_USE_ADMA))
 		sdhci_adma_table_post(host, data);
@@ -1217,17 +1230,6 @@ static void sdhci_finish_data(struct sdhci_host *host)
 	if (data->stop &&
 	    (data->error ||
 	     !data->mrq->sbc)) {
-
-		/*
-		 * The controller needs a reset of internal state machines
-		 * upon error conditions.
-		 */
-		if (data->error) {
-			if (!host->cmd || host->cmd == data_cmd)
-				sdhci_do_reset(host, SDHCI_RESET_CMD);
-			sdhci_do_reset(host, SDHCI_RESET_DATA);
-		}
-
 		/*
 		 * 'cap_cmd_during_tfr' request must not use the command line
 		 * after mmc_command_done() has been called. It is upper layer's
@@ -1837,14 +1839,15 @@ static int sdhci_crypto_cfg(struct sdhci_host *host, struct mmc_request *mrq,
 {
 	int err = 0;
 
-	if (host->crypto_reset_reqd && host->ops->crypto_engine_reset) {
+	if (host->mmc->inlinecrypt_reset_needed &&
+			host->ops->crypto_engine_reset) {
 		err = host->ops->crypto_engine_reset(host);
 		if (err) {
 			pr_err("%s: crypto reset failed\n",
 					mmc_hostname(host->mmc));
 			goto out;
 		}
-		host->crypto_reset_reqd = false;
+		host->mmc->inlinecrypt_reset_needed = false;
 	}
 
 	if (host->ops->crypto_engine_cfg) {
@@ -2702,9 +2705,15 @@ int sdhci_execute_tuning(struct mmc_host *mmc, u32 opcode)
 	}
 
 	if (host->ops->platform_execute_tuning) {
+		/*
+		 * Make sure re-tuning won't get triggered for the CRC errors
+		 * occurred while executing tuning
+		 */
+		mmc_retune_disable(mmc);
 		err = host->ops->platform_execute_tuning(host, opcode);
-			goto out;
-		}
+		mmc_retune_enable(mmc);
+		goto out;
+	}
 
 	host->mmc->retune_period = tuning_count;
 
@@ -3082,9 +3091,24 @@ static void sdhci_timeout_data_timer(unsigned long data)
  *                                                                           *
 \*****************************************************************************/
 
-static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
+static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask, u32 *intmask_p)
 {
 	u16 auto_cmd_status;
+	/* Handle auto-CMD12 error */
+	if (intmask & SDHCI_INT_AUTO_CMD_ERR && host->data_cmd) {
+		struct mmc_request *mrq = host->data_cmd->mrq;
+		u16 auto_cmd_status = sdhci_readw(host, SDHCI_AUTO_CMD_STATUS);
+		int data_err_bit = (auto_cmd_status & SDHCI_AUTO_CMD_TIMEOUT) ?
+				   SDHCI_INT_DATA_TIMEOUT :
+				   SDHCI_INT_DATA_CRC;
+
+		/* Treat auto-CMD12 error the same as data error */
+		if (!mrq->sbc && (host->flags & SDHCI_AUTO_CMD12)) {
+			*intmask_p |= data_err_bit;
+			return;
+		}
+	}
+
 	if (!host->cmd) {
 		/*
 		 * SDHCI recovers from errors by resetting the cmd and data
@@ -3107,7 +3131,7 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 
 	if (intmask & (SDHCI_INT_TIMEOUT | SDHCI_INT_CRC |
 		       SDHCI_INT_END_BIT | SDHCI_INT_INDEX |
-		       SDHCI_INT_ACMD12ERR)) {
+		       SDHCI_INT_AUTO_CMD_ERR)) {
 		if (intmask & SDHCI_INT_TIMEOUT) {
 			host->cmd->error = -ETIMEDOUT;
 			host->mmc->err_stats[MMC_ERR_CMD_TIMEOUT]++;
@@ -3116,31 +3140,23 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 			host->mmc->err_stats[MMC_ERR_CMD_CRC]++;
 		}
 
-		if (intmask & SDHCI_INT_ACMD12ERR) {
+		if (intmask & SDHCI_INT_AUTO_CMD_ERR) {
 			auto_cmd_status = host->auto_cmd_err_sts;
 			host->mmc->err_stats[MMC_ERR_AUTO_CMD]++;
 			pr_err_ratelimited("%s: %s: AUTO CMD err sts 0x%08x\n",
 				mmc_hostname(host->mmc), __func__,
 					auto_cmd_status);
 			if (auto_cmd_status & (SDHCI_AUTO_CMD12_NOT_EXEC |
-					       SDHCI_AUTO_CMD_INDEX_ERR |
-					       SDHCI_AUTO_CMD_ENDBIT_ERR))
+					       SDHCI_AUTO_CMD_INDEX |
+					       SDHCI_AUTO_CMD_END_BIT))
 				host->cmd->error = -EIO;
-			else if (auto_cmd_status & SDHCI_AUTO_CMD_TIMEOUT_ERR)
+			else if (auto_cmd_status & SDHCI_AUTO_CMD_TIMEOUT)
 				host->cmd->error = -ETIMEDOUT;
-			else if (auto_cmd_status & SDHCI_AUTO_CMD_CRC_ERR)
+			else if (auto_cmd_status & SDHCI_AUTO_CMD_CRC)
 				host->cmd->error = -EILSEQ;
 		}
 
-		/*
-		 * If this command initiates a data phase and a response
-		 * CRC error is signalled, the card can start transferring
-		 * data - the card may have received the command without
-		 * error.  We must not terminate the mmc_request early.
-		 *
-		 * If the card did not receive the command or returned an
-		 * error which prevented it sending data, the data phase
-		 * will time out.
+		/* Treat data command CRC error the same as data CRC error
 		 *
 		 * Even in case of cmd INDEX OR ENDBIT error we
 		 * handle it the same way.
@@ -3149,11 +3165,27 @@ static void sdhci_cmd_irq(struct sdhci_host *host, u32 intmask)
 		    (((intmask & (SDHCI_INT_CRC | SDHCI_INT_TIMEOUT)) ==
 		     SDHCI_INT_CRC) || (host->cmd->error == -EILSEQ))) {
 			host->cmd = NULL;
+			*intmask_p |= SDHCI_INT_DATA_CRC;
 			return;
 		}
 
 		sdhci_finish_mrq(host, host->cmd->mrq);
 		return;
+	}
+
+	/* Handle auto-CMD23 error */
+	if (intmask & SDHCI_INT_AUTO_CMD_ERR) {
+		struct mmc_request *mrq = host->cmd->mrq;
+		u16 auto_cmd_status = sdhci_readw(host, SDHCI_AUTO_CMD_STATUS);
+		int err = (auto_cmd_status & SDHCI_AUTO_CMD_TIMEOUT) ?
+			  -ETIMEDOUT :
+			  -EILSEQ;
+
+		if (mrq->sbc && (host->flags & SDHCI_AUTO_CMD23)) {
+			mrq->sbc->error = err;
+			sdhci_finish_mrq(host, mrq);
+			return;
+		}
 	}
 
 	if (intmask & SDHCI_INT_RESPONSE)
@@ -3490,9 +3522,9 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 		MMC_TRACE(host->mmc,
 			"%s: intmask: 0x%x\n", __func__, intmask);
 
-		if (intmask & SDHCI_INT_ACMD12ERR)
+		if (intmask & SDHCI_INT_AUTO_CMD_ERR)
 			host->auto_cmd_err_sts = sdhci_readw(host,
-			SDHCI_ACMD12_ERR);
+			SDHCI_AUTO_CMD_STATUS);
 
 		/* Clear selected interrupts. */
 		mask = intmask & (SDHCI_INT_CMD_MASK | SDHCI_INT_DATA_MASK |
@@ -3533,7 +3565,7 @@ static irqreturn_t sdhci_irq(int irq, void *dev_id)
 			if ((host->quirks2 & SDHCI_QUIRK2_SLOW_INT_CLR) &&
 				(host->clock <= 400000))
 				udelay(40);
-			sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK);
+			sdhci_cmd_irq(host, intmask & SDHCI_INT_CMD_MASK, &intmask);
 		}
 
 		if (intmask & SDHCI_INT_DATA_MASK) {
@@ -3580,7 +3612,11 @@ out:
 			   mmc_hostname(host->mmc), unexpected);
 		MMC_TRACE(host->mmc, "Unexpected interrupt 0x%08x.\n",
 				unexpected);
-		sdhci_dumpregs(host);
+		if (host->mmc->cmdq_ops && host->mmc->cmdq_ops->dumpstate)
+			host->mmc->cmdq_ops->dumpstate(host->mmc);
+		else
+			sdhci_dumpregs(host);
+		BUG_ON(1);
 	}
 
 	return result;
@@ -3989,7 +4025,7 @@ static void sdhci_cmdq_clear_set_irqs(struct mmc_host *mmc, bool clear)
 			     SDHCI_INT_INDEX | SDHCI_INT_END_BIT |
 			     SDHCI_INT_CRC | SDHCI_INT_TIMEOUT |
 			     SDHCI_INT_DATA_END | SDHCI_INT_RESPONSE |
-			     SDHCI_INT_ACMD12ERR;
+			     SDHCI_INT_AUTO_CMD_ERR;
 		sdhci_writel(host, ier, SDHCI_INT_ENABLE);
 		sdhci_writel(host, ier, SDHCI_SIGNAL_ENABLE);
 	}
@@ -4055,14 +4091,14 @@ static int sdhci_cmdq_crypto_cfg(struct mmc_host *mmc,
 	if (!host->is_crypto_en)
 		return 0;
 
-	if (host->crypto_reset_reqd && host->ops->crypto_engine_reset) {
+	if (mmc->inlinecrypt_reset_needed && host->ops->crypto_engine_reset) {
 		err = host->ops->crypto_engine_reset(host);
 		if (err) {
 			pr_err("%s: crypto reset failed\n",
 					mmc_hostname(host->mmc));
 			goto out;
 		}
-		host->crypto_reset_reqd = false;
+		mmc->inlinecrypt_reset_needed = false;
 	}
 
 	if (host->ops->crypto_engine_cmdq_cfg) {

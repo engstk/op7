@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -71,11 +71,25 @@ enum dsi_dms_mode {
 	DSI_DMS_MODE_RES_SWITCH_IMMEDIATE,
 };
 
+enum dsi_panel_physical_type {
+	DSI_DISPLAY_PANEL_TYPE_LCD = 0,
+	DSI_DISPLAY_PANEL_TYPE_OLED,
+	DSI_DISPLAY_PANEL_TYPE_MAX,
+};
+
 struct dsi_dfps_capabilities {
-	bool dfps_support;
 	enum dsi_dfps_type type;
 	u32 min_refresh_rate;
 	u32 max_refresh_rate;
+	u32 *dfps_list;
+	u32 dfps_list_len;
+	bool dfps_support;
+};
+
+struct dsi_dyn_clk_caps {
+	bool dyn_clk_support;
+	u32 *bit_clk_list;
+	u32 bit_clk_list_len;
 };
 
 struct dsi_pinctrl_info {
@@ -97,16 +111,16 @@ struct dsi_backlight_config {
 	u32 bl_min_level;
 	u32 bl_max_level;
 	u32 brightness_max_level;
+	u32 brightness_default_level;
 	u32 bl_level;
 	u32 bl_scale;
 	u32 bl_scale_ad;
 
 	int en_gpio;
 	/* PWM params */
-	bool pwm_pmi_control;
-	u32 pwm_pmic_bank;
+	struct pwm_device *pwm_bl;
+	bool pwm_enabled;
 	u32 pwm_period_usecs;
-	int pwm_gpio;
 
 	/* WLED params */
 	struct led_trigger *wled;
@@ -167,6 +181,7 @@ struct dsi_panel {
 	enum dsi_op_mode panel_mode;
 
 	struct dsi_dfps_capabilities dfps_caps;
+	struct dsi_dyn_clk_caps dyn_clk_caps;
 	struct dsi_panel_phy_props phy_props;
 
 	struct dsi_display_mode *cur_mode;
@@ -195,6 +210,8 @@ struct dsi_panel {
 	enum dsi_dms_mode dms_mode;
 
 	bool sync_broadcast_en;
+	int power_mode;
+	enum dsi_panel_physical_type panel_type;
 };
 
 static inline bool dsi_panel_ulps_feature_enabled(struct dsi_panel *panel)
@@ -215,6 +232,11 @@ static inline void dsi_panel_acquire_panel_lock(struct dsi_panel *panel)
 static inline void dsi_panel_release_panel_lock(struct dsi_panel *panel)
 {
 	mutex_unlock(&panel->panel_lock);
+}
+
+static inline bool dsi_panel_is_type_oled(struct dsi_panel *panel)
+{
+	return (panel->panel_type == DSI_DISPLAY_PANEL_TYPE_OLED);
 }
 
 struct dsi_panel *dsi_panel_get(struct device *parent,

@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2009-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -244,6 +244,7 @@ static struct sde_dbg_base {
 	u32 cur_evt_index;
 	u32 dbgbus_dump_idx;
 	u32 vbif_dbgbus_dump_idx;
+	enum sde_dbg_dump_context dump_mode;
 } sde_dbg_base;
 
 /* sde_dbg_base_evtlog - global pointer to main sde event log for macro use */
@@ -3390,6 +3391,17 @@ static inline int _sde_dbg_enable_power(int enable)
 }
 
 /**
+ * _sde_power_check - check if power needs to enabled
+ * @dump_mode: to check if power need to be enabled
+ * Return: true if success; false otherwise
+ */
+static inline bool _sde_power_check(enum sde_dbg_dump_context dump_mode)
+{
+	return (dump_mode == SDE_DBG_DUMP_CLK_ENABLED_CTX ||
+		dump_mode == SDE_DBG_DUMP_IRQ_CTX) ? false : true;
+}
+
+/**
  * _sde_dump_reg - helper function for dumping rotator register set content
  * @dump_name: register set name
  * @reg_dump_flag: dumping flag controlling in-log/memory dump location
@@ -3400,8 +3412,7 @@ static inline int _sde_dbg_enable_power(int enable)
  * @from_isr: whether being called from isr context
  */
 static void _sde_dump_reg(const char *dump_name, u32 reg_dump_flag,
-		char *base_addr, char *addr, size_t len_bytes, u32 **dump_mem,
-		bool from_isr)
+		char *base_addr, char *addr, size_t len_bytes, u32 **dump_mem)
 {
 	u32 in_log, in_mem, len_align, len_padded;
 	u32 *dump_addr = NULL;
@@ -3439,7 +3450,7 @@ static void _sde_dump_reg(const char *dump_name, u32 reg_dump_flag,
 
 		if (dump_mem && *dump_mem) {
 			dump_addr = *dump_mem;
-			dev_info(sde_dbg_base.dev,
+			dev_dbg(sde_dbg_base.dev,
 				"%s: start_addr:0x%pK len:0x%x reg_offset=0x%lx\n",
 				dump_name, dump_addr, len_padded,
 				(unsigned long)(addr - base_addr));
@@ -3449,7 +3460,7 @@ static void _sde_dump_reg(const char *dump_name, u32 reg_dump_flag,
 		}
 	}
 
-	if (!from_isr) {
+	if (_sde_power_check(sde_dbg_base.dump_mode)) {
 		rc = _sde_dbg_enable_power(true);
 		if (rc) {
 			pr_err("failed to enable power %d\n", rc);
@@ -3481,7 +3492,7 @@ static void _sde_dump_reg(const char *dump_name, u32 reg_dump_flag,
 		addr += REG_DUMP_ALIGN;
 	}
 
-	if (!from_isr)
+	if (_sde_power_check(sde_dbg_base.dump_mode))
 		_sde_dbg_enable_power(false);
 }
 
@@ -3552,14 +3563,19 @@ static void _sde_dump_reg_by_ranges(struct sde_dbg_reg_base *dbg,
 	char *addr;
 	size_t len;
 	struct sde_dbg_reg_range *range_node;
+	bool in_log = false;
 
 	if (!dbg || !(dbg->base || dbg->cb)) {
 		pr_err("dbg base is null!\n");
 		return;
 	}
 
-	dev_info(sde_dbg_base.dev, "%s:=========%s DUMP=========\n", __func__,
-			dbg->name);
+	in_log = reg_dump_flag & SDE_DBG_DUMP_IN_LOG;
+
+	if (in_log)
+		dev_info(sde_dbg_base.dev, "%s:========= %s DUMP=========\n",
+			__func__, dbg->name);
+
 	if (dbg->cb) {
 		dbg->cb(dbg->cb_ptr);
 	/* If there is a list to dump the registers by ranges, use the ranges */
@@ -3583,18 +3599,20 @@ static void _sde_dump_reg_by_ranges(struct sde_dbg_reg_base *dbg,
 
 			_sde_dump_reg(range_node->range_name, reg_dump_flag,
 					dbg->base, addr, len,
-					&range_node->reg_dump, false);
+					&range_node->reg_dump);
 		}
 	} else {
 		/* If there is no list to dump ranges, dump all registers */
-		dev_info(sde_dbg_base.dev,
+		if (in_log) {
+			dev_info(sde_dbg_base.dev,
 				"Ranges not found, will dump full registers\n");
-		dev_info(sde_dbg_base.dev, "base:0x%pK len:0x%zx\n", dbg->base,
-				dbg->max_offset);
+			dev_info(sde_dbg_base.dev, "base:0x%pK len:0x%zx\n",
+				dbg->base, dbg->max_offset);
+		}
 		addr = dbg->base;
 		len = dbg->max_offset;
 		_sde_dump_reg(dbg->name, reg_dump_flag, dbg->base, addr, len,
-				&dbg->reg_dump, false);
+				&dbg->reg_dump);
 	}
 }
 
@@ -3712,19 +3730,22 @@ static void _sde_dbg_dump_sde_dbg_bus(struct sde_dbg_sde_debug_bus *bus)
 
 		if (*dump_mem) {
 			dump_addr = *dump_mem;
-			dev_info(sde_dbg_base.dev,
-				"%s: start_addr:0x%pK len:0x%x\n",
-				__func__, dump_addr, list_size);
+			if (in_log)
+				dev_info(sde_dbg_base.dev,
+					"%s: start_addr:0x%pK len:0x%x\n",
+					__func__, dump_addr, list_size);
 		} else {
 			in_mem = false;
 			pr_err("dump_mem: allocation fails\n");
 		}
 	}
 
-	rc = _sde_dbg_enable_power(true);
-	if (rc) {
-		pr_err("failed to enable power %d\n", rc);
-		return;
+	if (_sde_power_check(sde_dbg_base.dump_mode)) {
+		rc = _sde_dbg_enable_power(true);
+		if (rc) {
+			pr_err("failed to enable power %d\n", rc);
+			return;
+		}
 	}
 
 	for (i = 0; i < bus->cmn.entries_size; i++) {
@@ -3766,7 +3787,9 @@ static void _sde_dbg_dump_sde_dbg_bus(struct sde_dbg_sde_debug_bus *bus)
 						head->wr_addr != DBGBUS_DSPP)
 			writel_relaxed(0x0, mem_base + DBGBUS_DSPP);
 	}
-	_sde_dbg_enable_power(false);
+
+	if (_sde_power_check(sde_dbg_base.dump_mode))
+		_sde_dbg_enable_power(false);
 
 	dev_info(sde_dbg_base.dev, "======== end %s dump =========\n",
 			bus->cmn.name);
@@ -3869,19 +3892,23 @@ static void _sde_dbg_dump_vbif_dbg_bus(struct sde_dbg_vbif_debug_bus *bus)
 
 		if (*dump_mem) {
 			dump_addr = *dump_mem;
-			dev_info(sde_dbg_base.dev,
-				"%s: start_addr:0x%pK len:0x%x\n",
-				__func__, dump_addr, list_size);
+			if (in_log)
+				dev_info(sde_dbg_base.dev,
+					"%s: start_addr:0x%pK len:0x%x\n",
+					__func__, dump_addr, list_size);
 		} else {
 			in_mem = false;
 			pr_err("dump_mem: allocation fails\n");
 		}
 	}
 
-	rc = _sde_dbg_enable_power(true);
-	if (rc) {
-		pr_err("failed to enable power %d\n", rc);
-		return;
+
+	if (_sde_power_check(sde_dbg_base.dump_mode)) {
+		rc = _sde_dbg_enable_power(true);
+		if (rc) {
+			pr_err("failed to enable power %d\n", rc);
+			return;
+		}
 	}
 
 	value = readl_relaxed(mem_base + MMSS_VBIF_CLKON);
@@ -3933,7 +3960,8 @@ static void _sde_dbg_dump_vbif_dbg_bus(struct sde_dbg_vbif_debug_bus *bus)
 			dump_addr += (head->block_cnt * head->test_pnt_cnt * 4);
 	}
 
-	_sde_dbg_enable_power(false);
+	if (_sde_power_check(sde_dbg_base.dump_mode))
+		_sde_dbg_enable_power(false);
 
 	dev_info(sde_dbg_base.dev, "======== end %s dump =========\n",
 			bus->cmn.name);
@@ -3970,13 +3998,16 @@ static void _sde_dump_array(struct sde_dbg_reg_base *blk_arr[],
 		}
 	}
 
+	if (sde_dbg_base.enable_reg_dump & SDE_DBG_DUMP_IN_MEM)
+		pr_info("=========Captured reg dump in memory=========\n");
+
 	if (dump_dbgbus_sde)
 		_sde_dbg_dump_sde_dbg_bus(&sde_dbg_base.dbgbus_sde);
 
 	if (dump_dbgbus_vbif_rt)
 		_sde_dbg_dump_vbif_dbg_bus(&sde_dbg_base.dbgbus_vbif_rt);
 
-	if (sde_dbg_base.dsi_dbg_bus || dump_all)
+	if (sde_dbg_base.dsi_dbg_bus)
 		dsi_ctrl_debug_dump(sde_dbg_base.dbgbus_dsi.entries,
 				    sde_dbg_base.dbgbus_dsi.size);
 
@@ -4001,7 +4032,7 @@ static void _sde_dump_work(struct work_struct *work)
 		sde_dbg_base.dump_secure);
 }
 
-void sde_dbg_dump(bool queue_work, const char *name, ...)
+void sde_dbg_dump(enum sde_dbg_dump_context dump_mode, const char *name, ...)
 {
 	int i, index = 0;
 	bool do_panic = false;
@@ -4018,7 +4049,8 @@ void sde_dbg_dump(bool queue_work, const char *name, ...)
 	if (!sde_evtlog_is_enabled(sde_dbg_base.evtlog, SDE_EVTLOG_ALWAYS))
 		return;
 
-	if (queue_work && work_pending(&sde_dbg_base.dump_work))
+	if ((dump_mode == SDE_DBG_DUMP_IRQ_CTX) &&
+		work_pending(&sde_dbg_base.dump_work))
 		return;
 
 	blk_arr = &sde_dbg_base.req_dump_blks[0];
@@ -4027,6 +4059,7 @@ void sde_dbg_dump(bool queue_work, const char *name, ...)
 	memset(sde_dbg_base.req_dump_blks, 0,
 			sizeof(sde_dbg_base.req_dump_blks));
 	sde_dbg_base.dump_all = false;
+	sde_dbg_base.dump_mode = dump_mode;
 
 	va_start(args, name);
 	i = 0;
@@ -4069,7 +4102,7 @@ void sde_dbg_dump(bool queue_work, const char *name, ...)
 	}
 	va_end(args);
 
-	if (queue_work) {
+	if (dump_mode == SDE_DBG_DUMP_IRQ_CTX) {
 		/* schedule work to dump later */
 		sde_dbg_base.work_panic = do_panic;
 		sde_dbg_base.dbgbus_sde.cmn.include_in_deferred_work =
@@ -4190,26 +4223,9 @@ static ssize_t sde_evtlog_dump_read(struct file *file, char __user *buff,
 	return len;
 }
 
-/**
- * sde_evtlog_dump_write - debugfs write handler for evtlog dump
- * @file: file handler
- * @user_buf: user buffer content from debugfs
- * @count: size of user buffer
- * @ppos: position offset of user buffer
- */
-static ssize_t sde_evtlog_dump_write(struct file *file,
-	const char __user *user_buf, size_t count, loff_t *ppos)
-{
-	_sde_dump_array(NULL, 0, sde_dbg_base.panic_on_err, "dump_debugfs",
-		true, true, true, false);
-
-	return count;
-}
-
 static const struct file_operations sde_evtlog_fops = {
 	.open = sde_dbg_debugfs_open,
 	.read = sde_evtlog_dump_read,
-	.write = sde_evtlog_dump_write,
 };
 
 /**
@@ -5126,7 +5142,9 @@ void sde_dbg_init_dbg_buses(u32 hwversion)
 		dbg->dbgbus_dsi.entries = dsi_dbg_bus_sdm845;
 		dbg->dbgbus_dsi.size = ARRAY_SIZE(dsi_dbg_bus_sdm845);
 	} else if (IS_SM8150_TARGET(hwversion) || IS_SM6150_TARGET(hwversion) ||
-				IS_SDMMAGPIE_TARGET(hwversion)) {
+				IS_SDMMAGPIE_TARGET(hwversion) ||
+				IS_SDMTRINKET_TARGET(hwversion) ||
+				IS_ATOLL_TARGET(hwversion)) {
 		dbg->dbgbus_sde.entries = dbg_bus_sde_sm8150;
 		dbg->dbgbus_sde.cmn.entries_size =
 				ARRAY_SIZE(dbg_bus_sde_sm8150);
@@ -5135,8 +5153,8 @@ void sde_dbg_init_dbg_buses(u32 hwversion)
 		dbg->dbgbus_vbif_rt.entries = vbif_dbg_bus_msm8998;
 		dbg->dbgbus_vbif_rt.cmn.entries_size =
 				ARRAY_SIZE(vbif_dbg_bus_msm8998);
-		dbg->dbgbus_dsi.entries = NULL;
-		dbg->dbgbus_dsi.size = 0;
+		dbg->dbgbus_dsi.entries = dsi_dbg_bus_sdm845;
+		dbg->dbgbus_dsi.size = ARRAY_SIZE(dsi_dbg_bus_sdm845);
 	} else {
 		pr_err("unsupported chipset id %X\n", hwversion);
 	}

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -43,22 +43,6 @@
 
 #define TICKS_IN_MICRO_SECOND    1000000
 
-/**
- * enum dsi_ctrl_driver_ops - controller driver ops
- */
-enum dsi_ctrl_driver_ops {
-	DSI_CTRL_OP_POWER_STATE_CHANGE,
-	DSI_CTRL_OP_CMD_ENGINE,
-	DSI_CTRL_OP_VID_ENGINE,
-	DSI_CTRL_OP_HOST_ENGINE,
-	DSI_CTRL_OP_CMD_TX,
-	DSI_CTRL_OP_HOST_INIT,
-	DSI_CTRL_OP_TPG,
-	DSI_CTRL_OP_PHY_SW_RESET,
-	DSI_CTRL_OP_ASYNC_TIMING,
-	DSI_CTRL_OP_MAX
-};
-
 struct dsi_ctrl_list_item {
 	struct dsi_ctrl *ctrl;
 	struct list_head list;
@@ -71,6 +55,7 @@ static const enum dsi_ctrl_version dsi_ctrl_v1_4 = DSI_CTRL_VERSION_1_4;
 static const enum dsi_ctrl_version dsi_ctrl_v2_0 = DSI_CTRL_VERSION_2_0;
 static const enum dsi_ctrl_version dsi_ctrl_v2_2 = DSI_CTRL_VERSION_2_2;
 static const enum dsi_ctrl_version dsi_ctrl_v2_3 = DSI_CTRL_VERSION_2_3;
+static const enum dsi_ctrl_version dsi_ctrl_v2_4 = DSI_CTRL_VERSION_2_4;
 
 static const struct of_device_id msm_dsi_of_match[] = {
 	{
@@ -88,6 +73,10 @@ static const struct of_device_id msm_dsi_of_match[] = {
 	{
 		.compatible = "qcom,dsi-ctrl-hw-v2.3",
 		.data = &dsi_ctrl_v2_3,
+	},
+	{
+		.compatible = "qcom,dsi-ctrl-hw-v2.4",
+		.data = &dsi_ctrl_v2_4,
 	},
 	{}
 };
@@ -491,6 +480,7 @@ static int dsi_ctrl_init_regmap(struct platform_device *pdev,
 		break;
 	case DSI_CTRL_VERSION_2_2:
 	case DSI_CTRL_VERSION_2_3:
+	case DSI_CTRL_VERSION_2_4:
 		ptr = msm_ioremap(pdev, "disp_cc_base", ctrl->name);
 		if (IS_ERR(ptr)) {
 			pr_err("disp_cc base address not found for [%s]\n",
@@ -593,6 +583,7 @@ static int dsi_ctrl_clocks_init(struct platform_device *pdev,
 	if (IS_ERR(hs_link->byte_clk)) {
 		rc = PTR_ERR(hs_link->byte_clk);
 		pr_err("failed to get byte_clk, rc=%d\n", rc);
+		hs_link->byte_clk = NULL;
 		goto fail;
 	}
 
@@ -600,6 +591,7 @@ static int dsi_ctrl_clocks_init(struct platform_device *pdev,
 	if (IS_ERR(hs_link->pixel_clk)) {
 		rc = PTR_ERR(hs_link->pixel_clk);
 		pr_err("failed to get pixel_clk, rc=%d\n", rc);
+		hs_link->pixel_clk = NULL;
 		goto fail;
 	}
 
@@ -607,6 +599,7 @@ static int dsi_ctrl_clocks_init(struct platform_device *pdev,
 	if (IS_ERR(lp_link->esc_clk)) {
 		rc = PTR_ERR(lp_link->esc_clk);
 		pr_err("failed to get esc_clk, rc=%d\n", rc);
+		lp_link->esc_clk = NULL;
 		goto fail;
 	}
 
@@ -620,6 +613,7 @@ static int dsi_ctrl_clocks_init(struct platform_device *pdev,
 	if (IS_ERR(rcg->byte_clk)) {
 		rc = PTR_ERR(rcg->byte_clk);
 		pr_err("failed to get byte_clk_rcg, rc=%d\n", rc);
+		rcg->byte_clk = NULL;
 		goto fail;
 	}
 
@@ -627,6 +621,7 @@ static int dsi_ctrl_clocks_init(struct platform_device *pdev,
 	if (IS_ERR(rcg->pixel_clk)) {
 		rc = PTR_ERR(rcg->pixel_clk);
 		pr_err("failed to get pixel_clk_rcg, rc=%d\n", rc);
+		rcg->pixel_clk = NULL;
 		goto fail;
 	}
 
@@ -833,7 +828,8 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 {
 	int rc = 0;
 	u32 num_of_lanes = 0;
-	u32 bpp, refresh_rate = TICKS_IN_MICRO_SECOND;
+	u32 bpp;
+	u32 refresh_rate = TICKS_IN_MICRO_SECOND;
 	u64 h_period, v_period, bit_rate, pclk_rate, bit_rate_per_lane,
 	    byte_clk_rate;
 	struct dsi_host_common_cfg *host_cfg = &config->common_config;
@@ -856,14 +852,17 @@ static int dsi_ctrl_update_link_freqs(struct dsi_ctrl *dsi_ctrl,
 		num_of_lanes = split_link->lanes_per_sublink;
 
 	if (config->bit_clk_rate_hz_override == 0) {
-		h_period = DSI_H_TOTAL_DSC(timing);
-		v_period = DSI_V_TOTAL(timing);
+		if (config->panel_mode == DSI_OP_CMD_MODE) {
+			h_period = DSI_H_ACTIVE_DSC(timing);
+			h_period += timing->overlap_pixels;
+			v_period = timing->v_active;
 
-		if (config->panel_mode == DSI_OP_CMD_MODE)
 			do_div(refresh_rate, timing->mdp_transfer_time_us);
-		else
+		} else {
+			h_period = DSI_H_TOTAL_DSC(timing);
+			v_period = DSI_V_TOTAL(timing);
 			refresh_rate = timing->refresh_rate;
-
+		}
 		bit_rate = h_period * v_period * refresh_rate * bpp;
 	} else {
 		bit_rate = config->bit_clk_rate_hz_override * num_of_lanes;
@@ -946,6 +945,7 @@ static int dsi_ctrl_copy_and_pad_cmd(struct dsi_ctrl *dsi_ctrl,
 	int rc = 0;
 	u8 *buf = NULL;
 	u32 len, i;
+	u8 cmd_type = 0;
 
 	len = packet->size;
 	len += 0x3; len &= ~0x03; /* Align to 32 bits */
@@ -968,7 +968,11 @@ static int dsi_ctrl_copy_and_pad_cmd(struct dsi_ctrl *dsi_ctrl,
 
 
 	/* send embedded BTA for read commands */
-	if ((buf[2] & 0x3f) == MIPI_DSI_DCS_READ)
+	cmd_type = buf[2] & 0x3f;
+	if ((cmd_type == MIPI_DSI_DCS_READ) ||
+	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_0_PARAM) ||
+	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_1_PARAM) ||
+	    (cmd_type == MIPI_DSI_GENERIC_READ_REQUEST_2_PARAM))
 		buf[3] |= BIT(5);
 
 	*buffer = buf;
@@ -1500,7 +1504,7 @@ static int dsi_message_rx(struct dsi_ctrl *dsi_ctrl,
 	cmd = buff[0];
 	switch (cmd) {
 	case MIPI_DSI_RX_ACKNOWLEDGE_AND_ERROR_REPORT:
-		pr_err("Rx ACK_ERROR\n");
+		pr_err("Rx ACK_ERROR 0x%x\n", cmd);
 		rc = 0;
 		break;
 	case MIPI_DSI_RX_GENERIC_SHORT_READ_RESPONSE_1BYTE:
@@ -1516,7 +1520,7 @@ static int dsi_message_rx(struct dsi_ctrl *dsi_ctrl,
 		rc = dsi_parse_long_read_resp(msg, buff);
 		break;
 	default:
-		pr_warn("Invalid response\n");
+		pr_warn("Invalid response: 0x%x\n", cmd);
 		rc = 0;
 	}
 
@@ -1590,6 +1594,18 @@ static int dsi_disable_ulps(struct dsi_ctrl *dsi_ctrl)
 	}
 
 	return rc;
+}
+
+static void dsi_ctrl_enable_error_interrupts(struct dsi_ctrl *dsi_ctrl)
+{
+	if (dsi_ctrl->host_config.panel_mode == DSI_OP_VIDEO_MODE &&
+			!dsi_ctrl->host_config.u.video_engine.bllp_lp11_en &&
+			!dsi_ctrl->host_config.u.video_engine.eof_bllp_lp11_en)
+		dsi_ctrl->hw.ops.enable_error_interrupts(&dsi_ctrl->hw,
+				0xFF00A0);
+	else
+		dsi_ctrl->hw.ops.enable_error_interrupts(&dsi_ctrl->hw,
+				0xFF00E0);
 }
 
 static int dsi_ctrl_drv_state_init(struct dsi_ctrl *dsi_ctrl)
@@ -2202,7 +2218,9 @@ int dsi_ctrl_setup(struct dsi_ctrl *dsi_ctrl)
 	}
 
 	dsi_ctrl->hw.ops.enable_status_interrupts(&dsi_ctrl->hw, 0x0);
-	dsi_ctrl->hw.ops.enable_error_interrupts(&dsi_ctrl->hw, 0xFF00E0);
+
+	dsi_ctrl_enable_error_interrupts(dsi_ctrl);
+
 	dsi_ctrl->hw.ops.ctrl_en(&dsi_ctrl->hw, true);
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
@@ -2324,6 +2342,12 @@ static void dsi_ctrl_handle_error_status(struct dsi_ctrl *dsi_ctrl,
 	/* DTLN PHY error */
 	if (error & 0x3000E00)
 		pr_err("dsi PHY contention error: 0x%lx\n", error);
+
+	/* ignore TX timeout if blpp_lp11 is disabled */
+	if (dsi_ctrl->host_config.panel_mode == DSI_OP_VIDEO_MODE &&
+			!dsi_ctrl->host_config.u.video_engine.bllp_lp11_en &&
+			!dsi_ctrl->host_config.u.video_engine.eof_bllp_lp11_en)
+		error &= ~DSI_HS_TX_TIMEOUT;
 
 	/* TX timeout error */
 	if (error & 0xE0) {
@@ -2622,27 +2646,37 @@ int dsi_ctrl_host_timing_update(struct dsi_ctrl *dsi_ctrl)
 }
 
 /**
- * dsi_ctrl_update_host_init_state() - Update the host initialization state.
+ * dsi_ctrl_update_host_state() - Update the host state.
  * @dsi_ctrl:        DSI controller handle.
+ * @op:            ctrl driver ops
  * @enable:        boolean signifying host state.
  *
- * Update the host initialization status only while exiting from ulps during
+ * Update the host status only while exiting from ulps during
  * suspend state.
  *
  * Return: error code.
  */
-int dsi_ctrl_update_host_init_state(struct dsi_ctrl *dsi_ctrl, bool enable)
+int dsi_ctrl_update_host_state(struct dsi_ctrl *dsi_ctrl,
+			       enum dsi_ctrl_driver_ops op, bool enable)
 {
 	int rc = 0;
 	u32 state = enable ? 0x1 : 0x0;
 
-	rc = dsi_ctrl_check_state(dsi_ctrl, DSI_CTRL_OP_HOST_INIT, state);
+	if (!dsi_ctrl)
+		return rc;
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
+	rc = dsi_ctrl_check_state(dsi_ctrl, op, state);
 	if (rc) {
 		pr_err("[DSI_%d] Controller state check failed, rc=%d\n",
 		       dsi_ctrl->cell_index, rc);
+		mutex_unlock(&dsi_ctrl->ctrl_lock);
 		return rc;
 	}
-	dsi_ctrl_update_state(dsi_ctrl, DSI_CTRL_OP_HOST_INIT, state);
+
+	dsi_ctrl_update_state(dsi_ctrl, op, state);
+	mutex_unlock(&dsi_ctrl->ctrl_lock);
+
 	return rc;
 }
 
@@ -2705,7 +2739,8 @@ int dsi_ctrl_host_init(struct dsi_ctrl *dsi_ctrl, bool is_splash_enabled)
 	}
 
 	dsi_ctrl->hw.ops.enable_status_interrupts(&dsi_ctrl->hw, 0x0);
-	dsi_ctrl->hw.ops.enable_error_interrupts(&dsi_ctrl->hw, 0xFF00E0);
+
+	dsi_ctrl_enable_error_interrupts(dsi_ctrl);
 
 	pr_debug("[DSI_%d]Host initialization complete, continuous splash status:%d\n",
 		dsi_ctrl->cell_index, is_splash_enabled);
@@ -2731,6 +2766,16 @@ void dsi_ctrl_isr_configure(struct dsi_ctrl *dsi_ctrl, bool enable)
 	else
 		_dsi_ctrl_destroy_isr(dsi_ctrl);
 
+	mutex_unlock(&dsi_ctrl->ctrl_lock);
+}
+
+void dsi_ctrl_hs_req_sel(struct dsi_ctrl *dsi_ctrl, bool sel_phy)
+{
+	if (!dsi_ctrl)
+		return;
+
+	mutex_lock(&dsi_ctrl->ctrl_lock);
+	dsi_ctrl->hw.ops.hs_req_sel(&dsi_ctrl->hw, sel_phy);
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
 }
 
@@ -2880,7 +2925,12 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 		goto error;
 	}
 
-	if (!(flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR))) {
+	if (!(flags & (DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
+		       DSI_MODE_FLAG_DYN_CLK))) {
+		/*
+		 * for dynamic clk switch case link frequence would
+		 * be updated dsi_display_dynamic_clk_switch().
+		 */
 		rc = dsi_ctrl_update_link_freqs(ctrl, config, clk_handle);
 		if (rc) {
 			pr_err("[%s] failed to update link frequencies, rc=%d\n",
@@ -2891,10 +2941,12 @@ int dsi_ctrl_update_host_config(struct dsi_ctrl *ctrl,
 
 	pr_debug("[DSI_%d]Host config updated\n", ctrl->cell_index);
 	memcpy(&ctrl->host_config, config, sizeof(ctrl->host_config));
-	ctrl->mode_bounds.x = ctrl->host_config.video_timing.h_active *
-			ctrl->horiz_index;
+	ctrl->mode_bounds.x = (ctrl->host_config.video_timing.h_active +
+			ctrl->host_config.video_timing.overlap_pixels) *
+						 ctrl->horiz_index;
 	ctrl->mode_bounds.y = 0;
-	ctrl->mode_bounds.w = ctrl->host_config.video_timing.h_active;
+	ctrl->mode_bounds.w = ctrl->host_config.video_timing.h_active +
+				ctrl->host_config.video_timing.overlap_pixels;
 	ctrl->mode_bounds.h = ctrl->host_config.video_timing.v_active;
 	memcpy(&ctrl->roi, &ctrl->mode_bounds, sizeof(ctrl->mode_bounds));
 	ctrl->modeupdated = true;
@@ -3593,6 +3645,27 @@ void dsi_ctrl_irq_update(struct dsi_ctrl *dsi_ctrl, bool enable)
 					DSI_SINT_ERROR);
 
 	mutex_unlock(&dsi_ctrl->ctrl_lock);
+}
+
+/**
+ * dsi_ctrl_wait4dynamic_refresh_done() - Poll for dynamci refresh
+ *				done interrupt.
+ * @dsi_ctrl:              DSI controller handle.
+ */
+int dsi_ctrl_wait4dynamic_refresh_done(struct dsi_ctrl *ctrl)
+{
+	int rc = 0;
+
+	if (!ctrl)
+		return 0;
+
+	mutex_lock(&ctrl->ctrl_lock);
+
+	if (ctrl->hw.ops.wait4dynamic_refresh_done)
+		rc = ctrl->hw.ops.wait4dynamic_refresh_done(&ctrl->hw);
+
+	mutex_unlock(&ctrl->ctrl_lock);
+	return rc;
 }
 
 /**

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,18 +20,15 @@
 #define IP_VER_4 4
 #define IP_VER_6 6
 
+#define MAX_MQ_NUM 10
 #define MAX_CLIENT_NUM 2
 #define MAX_FLOW_NUM 32
 #define DEFAULT_GRANT 1
 #define DFC_MAX_BEARERS_V01 16
 
-struct rmnet_flow_map {
-	struct list_head list;
-	u8 bearer_id;
-	u32 flow_id;
-	int ip_type;
-	u32 tcm_handle;
-};
+#define DFC_MODE_FLOW_ID 2
+#define DFC_MODE_MQ_NUM 3
+extern int dfc_mode;
 
 struct rmnet_bearer_map {
 	struct list_head list;
@@ -41,9 +38,20 @@ struct rmnet_bearer_map {
 	u32 grant_thresh;
 	u16 seq;
 	u8  ack_req;
-	u32 grant_before_ps;
-	u16 seq_before_ps;
-	u32 ancillary;
+	u32 last_grant;
+	u16 last_seq;
+	bool tcp_bidir;
+	bool rat_switch;
+	bool tx_off;
+};
+
+struct rmnet_flow_map {
+	struct list_head list;
+	u8 bearer_id;
+	u32 flow_id;
+	int ip_type;
+	u32 mq_idx;
+	struct rmnet_bearer_map *bearer;
 };
 
 struct svc_info {
@@ -52,19 +60,20 @@ struct svc_info {
 	u32 iface_id;
 };
 
+struct mq_map {
+	struct rmnet_bearer_map *bearer;
+	bool ancillary;
+};
+
 struct qos_info {
 	u8 mux_id;
 	struct net_device *real_dev;
 	struct list_head flow_head;
 	struct list_head bearer_head;
+	struct mq_map mq[MAX_MQ_NUM];
 	u32 default_grant;
 	u32 tran_num;
 	spinlock_t qos_lock;
-};
-
-struct flow_info {
-	struct net_device *dev;
-	struct rmnet_flow_map *itm;
 };
 
 struct qmi_info {
@@ -74,7 +83,9 @@ struct qmi_info {
 	void *dfc_clients[MAX_CLIENT_NUM];
 	void *dfc_pending[MAX_CLIENT_NUM];
 	unsigned long ps_work_active;
-	int ps_enabled;
+	bool ps_enabled;
+	bool dl_msg_active;
+	bool ps_ignore_grant;
 };
 
 enum data_ep_type_enum_v01 {
@@ -115,11 +126,13 @@ void dfc_qmi_client_exit(void *dfc_data);
 void dfc_qmi_burst_check(struct net_device *dev, struct qos_info *qos,
 			 int ip_type, u32 mark, unsigned int len);
 
-int qmi_rmnet_flow_control(struct net_device *dev, u32 tcm_handle, int enable);
-
-void dfc_qmi_wq_flush(struct qmi_info *qmi);
+int qmi_rmnet_flow_control(struct net_device *dev, u32 mq_idx, int enable);
 
 void dfc_qmi_query_flow(void *dfc_data);
+
+int dfc_bearer_flow_ctl(struct net_device *dev,
+			struct rmnet_bearer_map *bearer,
+			struct qos_info *qos);
 #else
 static inline struct rmnet_flow_map *
 qmi_rmnet_get_flow_map(struct qos_info *qos_info,
@@ -152,13 +165,16 @@ dfc_qmi_burst_check(struct net_device *dev, struct qos_info *qos,
 }
 
 static inline void
-dfc_qmi_wq_flush(struct qmi_info *qmi)
+dfc_qmi_query_flow(void *dfc_data)
 {
 }
 
-static inline void
-dfc_qmi_query_flow(void *dfc_data)
+static inline int
+dfc_bearer_flow_ctl(struct net_device *dev,
+		    struct rmnet_bearer_map *bearer,
+		    struct qos_info *qos)
 {
+	return 0;
 }
 #endif
 
@@ -167,6 +183,7 @@ int
 wda_qmi_client_init(void *port, struct svc_info *psvc, struct qmi_info *qmi);
 void wda_qmi_client_exit(void *wda_data);
 int wda_set_powersave_mode(void *wda_data, u8 enable);
+void qmi_rmnet_flush_ps_wq(void);
 #else
 static inline int
 wda_qmi_client_init(void *port, struct svc_info *psvc, struct qmi_info *qmi)
@@ -181,6 +198,9 @@ static inline void wda_qmi_client_exit(void *wda_data)
 static inline int wda_set_powersave_mode(void *wda_data, u8 enable)
 {
 	return -EINVAL;
+}
+static inline void qmi_rmnet_flush_ps_wq(void)
+{
 }
 #endif
 #endif /*_RMNET_QMI_I_H*/

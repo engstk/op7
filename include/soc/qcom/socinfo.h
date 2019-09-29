@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -69,18 +69,40 @@
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdmshrike")
 #define early_machine_is_sm6150()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sm6150")
+#define early_machine_is_sm6150p()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sm6150p")
+#define early_machine_is_sa8195p()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sa8195p")
 #define early_machine_is_qcs405()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs405")
 #define early_machine_is_qcs403()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs403")
 #define early_machine_is_qcs401()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs401")
+#define early_machine_is_qcs404()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs404")
+#define early_machine_is_qcs407()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs407")
 #define early_machine_is_sdxprairie()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdxprairie")
 #define early_machine_is_sdmmagpie()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdmmagpie")
+#define early_machine_is_sdmmagpiep()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdmmagpiep")
+#define early_machine_is_sa6155p()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sa6155p")
+#define early_machine_is_sa4155p()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sa4155p")
+#define early_machine_is_sa6155()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sa6155")
 #define early_machine_is_trinket()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,trinket")
+#define early_machine_is_qcs610()      \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs610")
+#define early_machine_is_qcs410()      \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs410")
+#define early_machine_is_atoll()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,atoll")
 #else
 #define of_board_is_sim()		0
 #define of_board_is_rumi()		0
@@ -105,12 +127,23 @@
 #define early_machine_is_sa8155p()	0
 #define early_machine_is_sdmshrike()	0
 #define early_machine_is_sm6150()	0
+#define early_machine_is_sa8195p()	0
+#define early_machine_is_sm6150p()	0
 #define early_machine_is_qcs405()	0
 #define early_machine_is_qcs403()	0
 #define early_machine_is_qcs401()	0
+#define early_machine_is_qcs404()       0
+#define early_machine_is_qcs407()       0
 #define early_machine_is_sdxprairie()	0
 #define early_machine_is_sdmmagpie()	0
+#define early_machine_is_sdmmagpiep()	0
+#define early_machine_is_sa6155p()	0
+#define early_machine_is_sa4155p()	0
+#define early_machine_is_sa6155()	0
 #define early_machine_is_trinket()	0
+#define early_machine_is_qcs610()       0
+#define early_machine_is_qcs410()       0
+#define early_machine_is_atoll()	0
 #endif
 
 #define PLATFORM_SUBTYPE_MDM	1
@@ -135,14 +168,25 @@ enum msm_cpu {
 	MSM_CPU_SM8150P,
 	MSM_CPU_SA8155,
 	MSM_CPU_SA8155P,
+	MSM_CPU_SA8195P,
 	MSM_CPU_SDMSHRIKE,
 	MSM_CPU_SM6150,
+	MSM_CPU_SM6150P,
 	MSM_CPU_QCS405,
 	MSM_CPU_QCS403,
 	MSM_CPU_QCS401,
+	MSM_CPU_QCS404,
+	MSM_CPU_QCS407,
 	SDX_CPU_SDXPRAIRIE,
 	MSM_CPU_SDMMAGPIE,
+	MSM_CPU_SDMMAGPIEP,
+	MSM_CPU_SA6155P,
+	MSM_CPU_SA4155P,
+	MSM_CPU_SA6155,
 	MSM_CPU_TRINKET,
+	MSM_CPU_QCS610,
+	MSM_CPU_QCS410,
+	MSM_CPU_ATOLL,
 };
 
 struct msm_soc_info {

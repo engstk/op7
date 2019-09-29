@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -16,8 +16,8 @@
 #include <linux/types.h>
 #include <linux/dma-mapping.h>
 
-#define IPA_DMA_SYNC                    1
-#define IPA_DMA_ASYNC                   0
+#define DMA_SYNC		1
+#define DMA_ASYNC		0
 
 enum cb_reason {
 	MHI_DEV_TRE_AVAILABLE = 0,
@@ -67,7 +67,7 @@ struct mhi_req {
 	u32                             snd_cmpl;
 	void                            *context;
 	size_t                          len;
-	size_t                          actual_len;
+	size_t                          transfer_len;
 	uint32_t                        rd_offset;
 	struct mhi_dev_client           *client;
 	struct list_head                list;
@@ -97,8 +97,8 @@ enum mhi_client_channel {
 	MHI_CLIENT_IP_CTRL_0_IN = 17,
 	MHI_CLIENT_IP_CTRL_1_OUT = 18,
 	MHI_CLIENT_IP_CTRL_1_IN = 19,
-	MHI_CLIENT_DCI_OUT = 20,
-	MHI_CLIENT_DCI_IN = 21,
+	MHI_CLIENT_IPCR_OUT = 20,
+	MHI_CLIENT_IPCR_IN = 21,
 	MHI_CLIENT_IP_CTRL_3_OUT = 22,
 	MHI_CLIENT_IP_CTRL_3_IN = 23,
 	MHI_CLIENT_IP_CTRL_4_OUT = 24,
@@ -132,6 +132,7 @@ enum mhi_client_channel {
 	MHI_CLIENT_RESERVED_1_UPPER = 99,
 	MHI_CLIENT_IP_HW_0_OUT = 100,
 	MHI_CLIENT_IP_HW_0_IN = 101,
+	MHI_CLIENT_ADPL_IN = 102,
 	MHI_CLIENT_RESERVED_2_LOWER = 102,
 	MHI_CLIENT_RESERVED_2_UPPER = 127,
 	MHI_MAX_CHANNELS = 102,

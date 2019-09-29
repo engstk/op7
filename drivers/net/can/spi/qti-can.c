@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,6 +24,7 @@
 #include <linux/of_gpio.h>
 #include <linux/uaccess.h>
 #include <linux/pm.h>
+#include <asm/arch_timer.h>
 #include <asm/div64.h>
 
 #define DEBUG_QTI_CAN	0
@@ -45,6 +46,9 @@
 #define DRIVER_MODE_PROPERTIES		1
 #define DRIVER_MODE_AMB			2
 #define QUERY_FIRMWARE_TIMEOUT_MS	100
+#define EUPGRADE			140
+#define QTIMER_DIV				192
+#define QTIMER_MUL				10000
 
 struct qti_can {
 	struct net_device	**netdev;
@@ -67,9 +71,11 @@ struct qti_can {
 	int reset_delay_msec;
 	int reset;
 	bool support_can_fd;
+	bool use_qtimer;
 	bool can_fw_cmd_timeout_req;
 	u32 rem_all_buffering_timeout_ms;
 	u32 can_fw_cmd_timeout_ms;
+	s64 time_diff;
 };
 
 struct qti_can_netdev_privdata {
@@ -119,6 +125,9 @@ struct spi_miso { /* TLV for MISO line */
 #define CMD_BOOT_ROM_UPGRADE_DATA	0x9A
 #define CMD_END_BOOT_ROM_UPGRADE	0x9B
 #define CMD_END_FW_UPDATE_FILE		0x9C
+#define CMD_UPDATE_TIME_INFO		0x9D
+#define CMD_SUSPEND_EVENT		0x9E
+#define CMD_RESUME_EVENT		0x9F
 
 #define IOCTL_RELEASE_CAN_BUFFER	(SIOCDEVPRIVATE + 0)
 #define IOCTL_ENABLE_BUFFERING		(SIOCDEVPRIVATE + 1)
@@ -165,8 +174,8 @@ struct can_add_filter_resp {
 
 struct can_receive_frame {
 	u8 can_if;
-	u32 ts;
-	u32 mid;
+	__le64 ts;
+	__le32 mid;
 	u8 dlc;
 	u8 data[8];
 } __packed;
@@ -178,6 +187,10 @@ struct can_config_bit_timing {
 	u32 phase_seg2;
 	u32 sjw;
 	u32 brp;
+} __packed;
+
+struct can_time_info {
+	__le64 time;
 } __packed;
 
 static struct can_bittiming_const rh850_bittiming_const = {
@@ -220,7 +233,7 @@ static struct can_bittiming_const qti_can_data_bittiming_const = {
 
 struct vehicle_property {
 	int id;
-	u64 ts;
+	__le64 ts;
 	int zone;
 	int val_type;
 	u32 data_len;
@@ -269,6 +282,25 @@ static irqreturn_t qti_can_irq(int irq, void *priv)
 	return IRQ_HANDLED;
 }
 
+static inline bool property_bool(struct device_node *np, const char *str)
+{
+	u32 tmp_val = 0;
+
+	if (of_property_read_u32(np, str, &tmp_val) < 0)
+		return false;
+	else
+		return (bool)tmp_val;
+}
+
+static inline u64 qtimer_time(void)
+{
+	u64 qt_count = 0;
+
+	qt_count = arch_counter_get_cntvct();
+
+	return mul_u64_u32_div(qt_count, QTIMER_MUL, QTIMER_DIV);
+}
+
 static void qti_can_receive_frame(struct qti_can *priv_data,
 				  struct can_receive_frame *frame)
 {
@@ -293,7 +325,7 @@ static void qti_can_receive_frame(struct qti_can *priv_data,
 		return;
 	}
 
-	LOGDI("rcv frame %d %d %x %d %x %x %x %x %x %x %x %x\n",
+	LOGDI("rcv frame %d %llu %x %d %x %x %x %x %x %x %x %x\n",
 	      frame->can_if, frame->ts, frame->mid, frame->dlc,
 	      frame->data[0], frame->data[1], frame->data[2], frame->data[3],
 	      frame->data[4], frame->data[5], frame->data[6], frame->data[7]);
@@ -303,12 +335,13 @@ static void qti_can_receive_frame(struct qti_can *priv_data,
 	for (i = 0; i < cf->can_dlc; i++)
 		cf->data[i] = frame->data[i];
 
-	nsec = ms_to_ktime(le32_to_cpu(frame->ts));
+	nsec = ms_to_ktime(le64_to_cpu(frame->ts)
+		+ priv_data->time_diff);
 	skt = skb_hwtstamps(skb);
 	skt->hwtstamp = nsec;
-	LOGDI("  hwtstamp %lld\n", ktime_to_ms(skt->hwtstamp));
 	skb->tstamp = nsec;
 	netif_rx(skb);
+	LOGDI("hwtstamp: %lld\n", ktime_to_ms(skt->hwtstamp));
 	netdev->stats.rx_packets++;
 }
 
@@ -356,11 +389,20 @@ static int qti_can_process_response(struct qti_can *priv_data,
 				    struct spi_miso *resp, int length)
 {
 	int ret = 0;
+	u64 mstime;
 
 	LOGDI("<%x %2d [%d]\n", resp->cmd, resp->len, resp->seq);
 	if (resp->cmd == CMD_CAN_RECEIVE_FRAME) {
 		struct can_receive_frame *frame =
 				(struct can_receive_frame *)&resp->data;
+		if ((resp->len - (frame->dlc + sizeof(frame->dlc))) <
+			(sizeof(*frame) - (sizeof(frame->dlc)
+			+ sizeof(frame->data)))) {
+			LOGDE("len:%d, size:%d\n", resp->len, sizeof(*frame));
+			LOGDE("Check the f/w version & upgrade to latest!!\n");
+			ret = -EUPGRADE;
+			goto exit;
+		}
 		if (resp->len > length) {
 			/* Error. This should never happen */
 			LOGDE("%s error: Saving %d bytes\n", __func__, length);
@@ -373,6 +415,7 @@ static int qti_can_process_response(struct qti_can *priv_data,
 	} else if (resp->cmd == CMD_PROPERTY_READ) {
 		struct vehicle_property *property =
 				(struct vehicle_property *)&resp->data;
+
 		if (resp->len > length) {
 			/* Error. This should never happen */
 			LOGDE("%s error: Saving %d bytes\n", __func__, length);
@@ -392,6 +435,7 @@ static int qti_can_process_response(struct qti_can *priv_data,
 	} else if (resp->cmd  == CMD_GET_FW_BR_VERSION) {
 		struct can_fw_br_resp *fw_resp =
 				(struct can_fw_br_resp *)resp->data;
+
 		dev_info(&priv_data->spidev->dev, "fw_can %d.%d",
 			 fw_resp->maj, fw_resp->min);
 		dev_info(&priv_data->spidev->dev, "fw string %s",
@@ -404,8 +448,19 @@ static int qti_can_process_response(struct qti_can *priv_data,
 		ret |= (fw_resp->br_min & 0xFF) << 16;
 		ret |= (fw_resp->maj & 0xF) << 8;
 		ret |= (fw_resp->min & 0xFF);
+	} else if (resp->cmd == CMD_UPDATE_TIME_INFO) {
+		struct can_time_info *time_data =
+			(struct can_time_info *)resp->data;
+
+		if (priv_data->use_qtimer)
+			mstime = div_u64(qtimer_time(), NSEC_PER_MSEC);
+		else
+			mstime = ktime_to_ms(ktime_get_boottime());
+
+		priv_data->time_diff = mstime - (le64_to_cpu(time_data->time));
 	}
 
+exit:
 	if (resp->cmd == priv_data->wait_cmd) {
 		priv_data->cmd_result = ret;
 		complete(&priv_data->response_completion);
@@ -556,7 +611,7 @@ static int qti_can_query_firmware_version(struct qti_can *priv_data)
 	mutex_unlock(&priv_data->spi_lock);
 
 	if (ret == 0) {
-		LOGDI("waiting for completion with timeout of %d jiffies",
+		LOGDI("waiting for completion with timeout of %lu jiffies",
 		      msecs_to_jiffies(QUERY_FIRMWARE_TIMEOUT_MS));
 		wait_for_completion_interruptible_timeout(
 				&priv_data->response_completion,
@@ -564,6 +619,30 @@ static int qti_can_query_firmware_version(struct qti_can *priv_data)
 		LOGDI("done waiting");
 		ret = priv_data->cmd_result;
 	}
+
+	return ret;
+}
+
+static int qti_can_notify_power_events(struct qti_can *priv_data, u8 event_type)
+{
+	char *tx_buf, *rx_buf;
+	int ret;
+	struct spi_mosi *req;
+
+	mutex_lock(&priv_data->spi_lock);
+	tx_buf = priv_data->tx_buf;
+	rx_buf = priv_data->rx_buf;
+	memset(tx_buf, 0, XFER_BUFFER_SIZE);
+	memset(rx_buf, 0, XFER_BUFFER_SIZE);
+	priv_data->xfer_length = XFER_BUFFER_SIZE;
+
+	req = (struct spi_mosi *)tx_buf;
+	req->cmd = event_type;
+	req->len = 0;
+	req->seq = atomic_inc_return(&priv_data->msg_seq);
+
+	ret = qti_can_do_spi_transaction(priv_data);
+	mutex_unlock(&priv_data->spi_lock);
 
 	return ret;
 }
@@ -994,6 +1073,40 @@ static int qti_can_convert_ioctl_cmd_to_spi_cmd(int ioctl_cmd)
 	return -EINVAL;
 }
 
+static int qti_can_end_fwupgrade_ioctl(struct net_device *netdev,
+				       struct ifreq *ifr, int cmd)
+{
+	int spi_cmd, ret;
+
+	struct qti_can *priv_data;
+	struct qti_can_netdev_privdata *netdev_priv_data;
+	struct spi_device *spi;
+	int len = 0;
+	u8 *data = NULL;
+
+	netdev_priv_data = netdev_priv(netdev);
+	priv_data = netdev_priv_data->qti_can;
+	spi = priv_data->spidev;
+	spi_cmd = qti_can_convert_ioctl_cmd_to_spi_cmd(cmd);
+	LOGDI("%s spi_cmd %x\n", __func__, spi_cmd);
+	if (spi_cmd < 0) {
+		LOGDE("%s wrong command %d\n", __func__, cmd);
+		return spi_cmd;
+	}
+
+	if (!ifr)
+		return -EINVAL;
+
+	mutex_lock(&priv_data->spi_lock);
+	LOGDI("%s len %d\n", __func__, len);
+
+	ret = qti_can_send_spi_locked(priv_data, spi_cmd, len, data);
+
+	mutex_unlock(&priv_data->spi_lock);
+
+	return ret;
+}
+
 static int qti_can_do_blocking_ioctl(struct net_device *netdev,
 				     struct ifreq *ifr, int cmd)
 {
@@ -1036,6 +1149,11 @@ static int qti_can_do_blocking_ioctl(struct net_device *netdev,
 			return -EFAULT;
 		}
 
+		if (ioctl_data->len < 0) {
+			LOGDE("ioctl_data->len is: %d\n", ioctl_data->len);
+			return -EINVAL;
+		}
+
 		/* Regular NULL check will fail here as ioctl_data is at
 		 * some offset
 		 */
@@ -1045,6 +1163,11 @@ static int qti_can_do_blocking_ioctl(struct net_device *netdev,
 		}
 	}
 	LOGDI("%s len %d\n", __func__, len);
+
+	if (len > 64 || len < 0) {
+		LOGDE("len value[%d] is not correct!!\n", len);
+		return -EINVAL;
+	}
 
 	priv_data->wait_cmd = spi_cmd;
 	priv_data->cmd_result = -1;
@@ -1119,10 +1242,12 @@ static int qti_can_netdev_do_ioctl(struct net_device *netdev,
 		qti_can_frame_filter(netdev, ifr, cmd);
 		ret = 0;
 		break;
+	case IOCTL_END_FIRMWARE_UPGRADE:
+		ret = qti_can_end_fwupgrade_ioctl(netdev, ifr, cmd);
+		break;
 	case IOCTL_GET_FW_BR_VERSION:
 	case IOCTL_BEGIN_FIRMWARE_UPGRADE:
 	case IOCTL_FIRMWARE_UPGRADE_DATA:
-	case IOCTL_END_FIRMWARE_UPGRADE:
 	case IOCTL_BEGIN_BOOT_ROM_UPGRADE:
 	case IOCTL_BOOT_ROM_UPGRADE_DATA:
 	case IOCTL_END_BOOT_ROM_UPGRADE:
@@ -1328,10 +1453,16 @@ static int qti_can_probe(struct spi_device *spi)
 		gpio_direction_output(priv_data->reset, 1);
 		/* wait for controller to come up after reset */
 		msleep(priv_data->reset_delay_msec);
+	} else {
+		msleep(priv_data->reset_delay_msec);
 	}
 
 	priv_data->support_can_fd = of_property_read_bool(spi->dev.of_node,
 							  "support-can-fd");
+
+	priv_data->use_qtimer = property_bool(spi->dev.of_node,
+					      "qcom,use_qtimer");
+	LOGDI("DT property: qcom,use_qtimer:%d\n", priv_data->use_qtimer);
 
 	if (of_device_is_compatible(spi->dev.of_node, "qcom,nxp,mpc5746c"))
 		qti_can_bittiming_const = flexcan_bittiming_const;
@@ -1430,19 +1561,47 @@ static int qti_can_remove(struct spi_device *spi)
 static int qti_can_suspend(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
+	struct qti_can *priv_data = NULL;
+	u8 power_event = CMD_SUSPEND_EVENT;
+	int ret = 0;
 
-	enable_irq_wake(spi->irq);
-	return 0;
+	if (spi) {
+		priv_data = spi_get_drvdata(spi);
+		enable_irq_wake(spi->irq);
+	} else {
+		ret = -1;
+	}
+
+	if (priv_data && !(ret < 0))
+		ret = qti_can_notify_power_events(priv_data, power_event);
+
+	return ret;
 }
 
 static int qti_can_resume(struct device *dev)
 {
 	struct spi_device *spi = to_spi_device(dev);
-	struct qti_can *priv_data = spi_get_drvdata(spi);
+	struct qti_can *priv_data = NULL;
+	int ret = 0;
+	u8 power_event = CMD_RESUME_EVENT;
 
-	disable_irq_wake(spi->irq);
-	qti_can_rx_message(priv_data);
-	return 0;
+	if (spi) {
+		priv_data = spi_get_drvdata(spi);
+		disable_irq_wake(spi->irq);
+
+		if (priv_data)
+			qti_can_rx_message(priv_data);
+		else
+			ret = -1;
+
+	} else {
+		ret = -1;
+	}
+
+	if (priv_data && !(ret < 0))
+		ret = qti_can_notify_power_events(priv_data, power_event);
+
+	return ret;
 }
 
 static const struct dev_pm_ops qti_can_dev_pm_ops = {
@@ -1459,6 +1618,7 @@ static struct spi_driver qti_can_driver = {
 #ifdef CONFIG_PM
 		.pm = &qti_can_dev_pm_ops,
 #endif
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = qti_can_probe,
 	.remove = qti_can_remove,

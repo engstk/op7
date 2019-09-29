@@ -1,6 +1,6 @@
 /*
  *
- * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -115,7 +115,7 @@ static void process_one_prefetch(struct ion_heap *sys_heap,
 	ret = sys_heap->ops->allocate(sys_heap, &buffer, info->size,
 					buffer.flags);
 	if (ret) {
-		pr_debug("%s: Failed to prefetch 0x%zx, ret = %d\n",
+		pr_debug("%s: Failed to prefetch %#llx, ret = %d\n",
 			 __func__, info->size, ret);
 		return;
 	}
@@ -177,7 +177,7 @@ static void process_one_shrink(struct ion_system_secure_heap *secure_heap,
 	size = min_t(size_t, pool_size, info->size);
 	ret = sys_heap->ops->allocate(sys_heap, &buffer, size, buffer.flags);
 	if (ret) {
-		pr_debug("%s: Failed to shrink 0x%zx, ret = %d\n",
+		pr_debug("%s: Failed to shrink %#llx, ret = %d\n",
 			 __func__, info->size, ret);
 		return;
 	}
@@ -285,7 +285,7 @@ static int __ion_system_secure_heap_resize(struct ion_heap *heap, void *ptr,
 		spin_unlock_irqrestore(&secure_heap->work_lock, flags);
 		goto out_free;
 	}
-	list_splice_init(&items, &secure_heap->prefetch_list);
+	list_splice_tail_init(&items, &secure_heap->prefetch_list);
 	queue_delayed_work(system_unbound_wq, &secure_heap->prefetch_work,
 			   shrink ?  msecs_to_jiffies(SHRINK_DELAY) : 0);
 	spin_unlock_irqrestore(&secure_heap->work_lock, flags);

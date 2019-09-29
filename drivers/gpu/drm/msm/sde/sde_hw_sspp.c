@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -48,6 +48,8 @@
 #define SSPP_SRC_CONSTANT_COLOR_REC1       0x180
 #define SSPP_EXCL_REC_SIZE_REC1            0x184
 #define SSPP_EXCL_REC_XY_REC1              0x188
+#define SSPP_LINE_INSERTION_CTRL_REC1      0x1E4
+#define SSPP_LINE_INSERTION_OUT_SIZE_REC1  0x1EC
 
 /* SSPP_DGM */
 #define SSPP_DGM_OP_MODE                   0x804
@@ -98,6 +100,9 @@
 #define SSPP_TRAFFIC_SHAPER_REC1           0x158
 #define SSPP_EXCL_REC_SIZE                 0x1B4
 #define SSPP_EXCL_REC_XY                   0x1B8
+#define SSPP_LINE_INSERTION_CTRL           0x1E0
+#define SSPP_LINE_INSERTION_OUT_SIZE       0x1E8
+
 #define SSPP_VIG_OP_MODE                   0x0
 #define SSPP_VIG_CSC_10_OP_MODE            0x0
 #define SSPP_TRAFFIC_SHAPER_BPC_MAX        0xFF
@@ -161,11 +166,12 @@ static inline int _sspp_subblk_offset(struct sde_hw_pipe *ctx,
 		u32 *idx)
 {
 	int rc = 0;
-	const struct sde_sspp_sub_blks *sblk = ctx->cap->sblk;
+	const struct sde_sspp_sub_blks *sblk;
 
 	if (!ctx)
 		return -EINVAL;
 
+	sblk = ctx->cap->sblk;
 	switch (s_id) {
 	case SDE_SSPP_SRC:
 		*idx = sblk->src_blk.base;
@@ -361,7 +367,12 @@ static void sde_hw_sspp_setup_format(struct sde_hw_pipe *ctx,
 		SDE_REG_WRITE(c, SSPP_FETCH_CONFIG,
 			SDE_FETCH_CONFIG_RESET_VALUE |
 			ctx->mdp->highest_bank_bit << 18);
-		if (IS_UBWC_20_SUPPORTED(ctx->catalog->ubwc_version)) {
+		if (IS_UBWC_10_SUPPORTED(ctx->catalog->ubwc_version)) {
+			alpha_en_mask = const_alpha_en ? BIT(31) : 0;
+			SDE_REG_WRITE(c, SSPP_UBWC_STATIC_CTRL,
+				alpha_en_mask | (ctx->mdp->ubwc_swizzle & 0x1) |
+				BIT(8) | (ctx->mdp->highest_bank_bit << 4));
+		} else if (IS_UBWC_20_SUPPORTED(ctx->catalog->ubwc_version)) {
 			alpha_en_mask = const_alpha_en ? BIT(31) : 0;
 			SDE_REG_WRITE(c, SSPP_UBWC_STATIC_CTRL,
 				alpha_en_mask | (ctx->mdp->ubwc_swizzle) |
@@ -687,7 +698,8 @@ static void _sde_hw_sspp_setup_excl_rect(struct sde_hw_pipe *ctx,
 	u32 size, xy;
 	u32 idx;
 	u32 reg_xy, reg_size;
-	u32 excl_ctrl, enable_bit;
+	u32 excl_ctrl = BIT(0);
+	u32 enable_bit;
 
 	if (_sspp_subblk_offset(ctx, SDE_SSPP_SRC, &idx) || !excl_rect)
 		return;
@@ -707,7 +719,10 @@ static void _sde_hw_sspp_setup_excl_rect(struct sde_hw_pipe *ctx,
 	xy = (excl_rect->y << 16) | (excl_rect->x);
 	size = (excl_rect->h << 16) | (excl_rect->w);
 
-	excl_ctrl = SDE_REG_READ(c, SSPP_EXCL_REC_CTL + idx);
+	/* Set if multi-rect disabled, read+modify only if multi-rect enabled */
+	if (rect_index != SDE_SSPP_RECT_SOLO)
+		excl_ctrl = SDE_REG_READ(c, SSPP_EXCL_REC_CTL + idx);
+
 	if (!size) {
 		SDE_REG_WRITE(c, SSPP_EXCL_REC_CTL + idx,
 				excl_ctrl & ~enable_bit);
@@ -1017,6 +1032,17 @@ static void _setup_layer_ops_colorproc(struct sde_hw_pipe *c,
 			else
 				c->ops.setup_vig_gamut = NULL;
 		}
+
+		if (c->cap->sblk->gamut_blk.version ==
+			(SDE_COLOR_PROCESS_VER(0x6, 0x0))) {
+			ret = reg_dmav1_init_sspp_op_v4(SDE_SSPP_VIG_GAMUT,
+							c->idx);
+			if (!ret)
+				c->ops.setup_vig_gamut =
+					reg_dmav1_setup_vig_gamutv6;
+			else
+				c->ops.setup_vig_gamut = NULL;
+		}
 	}
 
 	if (test_bit(SDE_SSPP_VIG_IGC, &features)) {
@@ -1027,6 +1053,17 @@ static void _setup_layer_ops_colorproc(struct sde_hw_pipe *c,
 			if (!ret)
 				c->ops.setup_vig_igc =
 					reg_dmav1_setup_vig_igcv5;
+			else
+				c->ops.setup_vig_igc = NULL;
+		}
+
+		if (c->cap->sblk->igc_blk[0].version ==
+			(SDE_COLOR_PROCESS_VER(0x6, 0x0))) {
+			ret = reg_dmav1_init_sspp_op_v4(SDE_SSPP_VIG_IGC,
+							c->idx);
+			if (!ret)
+				c->ops.setup_vig_igc =
+					reg_dmav1_setup_vig_igcv6;
 			else
 				c->ops.setup_vig_igc = NULL;
 		}
@@ -1120,6 +1157,39 @@ static void sde_hw_sspp_setup_dgm_csc(struct sde_hw_pipe *ctx,
 	SDE_REG_WRITE(&ctx->hw, offset, op_mode);
 }
 
+static void sde_hw_sspp_setup_line_insertion(struct sde_hw_pipe *ctx,
+		enum sde_sspp_multirect_index rect_index,
+		struct sde_hw_pipe_line_insertion_cfg *cfg)
+{
+	struct sde_hw_blk_reg_map *c;
+	u32 ctl_off, size_off, ctl_val;
+	u32 idx;
+
+	if (_sspp_subblk_offset(ctx, SDE_SSPP_SRC, &idx) || !cfg)
+		return;
+
+	c = &ctx->hw;
+
+	if (rect_index == SDE_SSPP_RECT_SOLO || rect_index == SDE_SSPP_RECT_0) {
+		ctl_off = SSPP_LINE_INSERTION_CTRL;
+		size_off = SSPP_LINE_INSERTION_OUT_SIZE;
+	} else {
+		ctl_off = SSPP_LINE_INSERTION_CTRL_REC1;
+		size_off = SSPP_LINE_INSERTION_OUT_SIZE_REC1;
+	}
+
+	if (cfg->enable)
+		ctl_val = BIT(31) |
+			(cfg->dummy_lines << 16) |
+			(cfg->first_active_lines << 8) |
+			(cfg->active_lines);
+	else
+		ctl_val = 0;
+
+	SDE_REG_WRITE(c, ctl_off, ctl_val);
+	SDE_REG_WRITE(c, size_off, cfg->dst_h << 16);
+}
+
 static void _setup_layer_ops(struct sde_hw_pipe *c,
 		unsigned long features)
 {
@@ -1195,6 +1265,9 @@ static void _setup_layer_ops(struct sde_hw_pipe *c,
 
 	c->ops.get_ubwc_error = sde_hw_sspp_get_ubwc_error;
 	c->ops.clear_ubwc_error = sde_hw_sspp_clear_ubwc_error;
+
+	if (test_bit(SDE_SSPP_LINE_INSERTION, &features))
+		c->ops.setup_line_insertion = sde_hw_sspp_setup_line_insertion;
 }
 
 static struct sde_sspp_cfg *_sspp_offset(enum sde_sspp sspp,
@@ -1254,8 +1327,8 @@ struct sde_hw_pipe *sde_hw_sspp_init(enum sde_sspp idx,
 	_setup_layer_ops(hw_pipe, hw_pipe->cap->features);
 
 	if (hw_pipe->ops.get_scaler_ver) {
-		hw_pipe->cap->sblk->scaler_blk.version =
-			hw_pipe->ops.get_scaler_ver(hw_pipe);
+		sde_init_scaler_blk(&hw_pipe->cap->sblk->scaler_blk,
+			hw_pipe->ops.get_scaler_ver(hw_pipe));
 	}
 
 	rc = sde_hw_blk_init(&hw_pipe->base, SDE_HW_BLK_SSPP, idx, &sde_hw_ops);

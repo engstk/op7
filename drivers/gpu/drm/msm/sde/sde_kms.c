@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -335,6 +335,10 @@ static int _sde_debugfs_init(struct sde_kms *sde_kms)
 		SDE_ERROR("failed to init perf %d\n", rc);
 		return rc;
 	}
+
+	if (sde_kms->catalog->qdss_count)
+		debugfs_create_u32("qdss", 0600, debugfs_root,
+				(u32 *)&sde_kms->qdss_enabled);
 
 	return 0;
 }
@@ -882,7 +886,7 @@ static int _sde_kms_splash_mem_get(struct sde_kms *sde_kms,
 	}
 
 	splash->ref_cnt++;
-	SDE_DEBUG("one2one mapping done for base:%x size:%x ref_cnt:%d\n",
+	SDE_DEBUG("one2one mapping done for base:%lx size:%x ref_cnt:%d\n",
 				splash->splash_buf_base,
 				splash->splash_buf_size,
 				splash->ref_cnt);
@@ -933,7 +937,7 @@ static int _sde_kms_splash_mem_put(struct sde_kms *sde_kms,
 
 	splash->ref_cnt--;
 
-	SDE_DEBUG("splash base:%x refcnt:%d\n",
+	SDE_DEBUG("splash base:%lx refcnt:%d\n",
 			splash->splash_buf_base, splash->ref_cnt);
 
 	if (!splash->ref_cnt) {
@@ -1467,6 +1471,17 @@ static int _sde_kms_setup_displays(struct drm_device *dev,
 			SDE_ERROR("dsi %d connector init failed\n", i);
 			dsi_display_drm_bridge_deinit(display);
 			sde_encoder_destroy(encoder);
+			continue;
+		}
+
+		rc = dsi_display_drm_ext_bridge_init(display,
+					encoder,
+					connector);
+		if (rc) {
+			SDE_ERROR("dsi %d ext bridge init failed\n", rc);
+			dsi_display_drm_bridge_deinit(display);
+			sde_encoder_destroy(encoder);
+			sde_connector_destroy(connector);
 		}
 	}
 
@@ -1855,6 +1870,14 @@ static void _sde_kms_hw_destroy(struct sde_kms *sde_kms,
 	if (sde_kms->core_client)
 		sde_power_client_destroy(&priv->phandle, sde_kms->core_client);
 	sde_kms->core_client = NULL;
+
+	if (sde_kms->sid)
+		msm_iounmap(pdev, sde_kms->sid);
+	sde_kms->sid = NULL;
+
+	if (sde_kms->reg_dma)
+		msm_iounmap(pdev, sde_kms->reg_dma);
+	sde_kms->reg_dma = NULL;
 
 	if (sde_kms->vbif[VBIF_NRT])
 		msm_iounmap(pdev, sde_kms->vbif[VBIF_NRT]);
@@ -2359,7 +2382,6 @@ static void _sde_kms_post_open(struct msm_kms *kms, struct drm_file *file)
 	struct drm_connector *connector = NULL;
 	struct drm_connector_list_iter conn_iter;
 	struct sde_connector *sde_conn = NULL;
-	int i;
 
 	if (!kms) {
 		SDE_ERROR("invalid kms\n");
@@ -2376,18 +2398,6 @@ static void _sde_kms_post_open(struct msm_kms *kms, struct drm_file *file)
 
 	if (!dev->mode_config.poll_enabled)
 		return;
-
-	/* init external dsi bridge here to make sure ext bridge is probed*/
-	for (i = 0; i < sde_kms->dsi_display_count; ++i) {
-		struct dsi_display *dsi_display;
-
-		dsi_display = sde_kms->dsi_displays[i];
-		if (dsi_display->bridge) {
-			dsi_display_drm_ext_bridge_init(dsi_display,
-				dsi_display->bridge->base.encoder,
-				dsi_display->drm_conn);
-		}
-	}
 
 	mutex_lock(&dev->mode_config.mutex);
 	drm_connector_list_iter_begin(dev, &conn_iter);
@@ -2752,7 +2762,8 @@ retry:
 		uint64_t lp;
 
 		if (!conn->state || !conn->state->crtc ||
-				conn->dpms != DRM_MODE_DPMS_ON)
+				conn->dpms != DRM_MODE_DPMS_ON ||
+				sde_encoder_in_clone_mode(conn->encoder))
 			continue;
 
 		lp = sde_connector_get_lp(conn);
@@ -2808,6 +2819,9 @@ retry:
 
 		lp = sde_connector_get_lp(conn);
 		if (lp != SDE_MODE_DPMS_LP2)
+			continue;
+
+		if (sde_encoder_in_clone_mode(conn->encoder))
 			continue;
 
 		ret = sde_encoder_wait_for_event(conn->encoder,
@@ -3044,9 +3058,35 @@ static void sde_kms_init_shared_hw(struct sde_kms *sde_kms)
 	if (!sde_kms || !sde_kms->hw_mdp || !sde_kms->catalog)
 		return;
 
+	if (sde_kms->hw_mdp->ops.intf_dp_select)
+		sde_kms->hw_mdp->ops.intf_dp_select(sde_kms->hw_mdp,
+						sde_kms->catalog);
+
 	if (sde_kms->hw_mdp->ops.reset_ubwc)
 		sde_kms->hw_mdp->ops.reset_ubwc(sde_kms->hw_mdp,
 						sde_kms->catalog);
+
+	if (sde_kms->hw_sid)
+		sde_hw_sid_rotator_set(sde_kms->hw_sid);
+}
+
+static void _sde_kms_set_lutdma_vbif_remap(struct sde_kms *sde_kms)
+{
+	struct sde_vbif_set_qos_params qos_params;
+	struct sde_mdss_cfg *catalog;
+
+	if (!sde_kms->catalog)
+		return;
+
+	catalog = sde_kms->catalog;
+
+	memset(&qos_params, 0, sizeof(qos_params));
+	qos_params.vbif_idx = catalog->dma_cfg.vbif_idx;
+	qos_params.xin_id = catalog->dma_cfg.xin_id;
+	qos_params.clk_ctrl = catalog->dma_cfg.clk_ctrl;
+	qos_params.client_type = VBIF_LUTDMA_CLIENT;
+
+	sde_vbif_set_qos_remap(sde_kms, &qos_params);
 }
 
 static void sde_kms_handle_power_event(u32 event_type, void *usr)
@@ -3065,6 +3105,7 @@ static void sde_kms_handle_power_event(u32 event_type, void *usr)
 		sde_irq_update(msm_kms, true);
 		sde_vbif_init_memtypes(sde_kms);
 		sde_kms_init_shared_hw(sde_kms);
+		_sde_kms_set_lutdma_vbif_remap(sde_kms);
 		sde_kms->first_kickoff = true;
 	} else if (event_type == SDE_POWER_EVENT_PRE_DISABLE) {
 		sde_irq_update(msm_kms, false);
@@ -3298,6 +3339,19 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 					rc);
 	}
 
+	sde_kms->sid = msm_ioremap(platformdev, "sid_phys",
+							"sid_phys");
+	if (IS_ERR(sde_kms->sid)) {
+		sde_kms->sid = NULL;
+		SDE_DEBUG("SID_PHYS is not defined\n");
+	} else {
+		sde_kms->sid_len = msm_iomap_size(platformdev, "sid_phys");
+		rc =  sde_dbg_reg_register_base("sid", sde_kms->sid,
+				sde_kms->sid_len);
+		if (rc)
+			SDE_ERROR("dbg base register sid failed: %d\n", rc);
+	}
+
 	sde_kms->core_client = sde_power_client_create(&priv->phandle, "core");
 	if (IS_ERR_OR_NULL(sde_kms->core_client)) {
 		rc = PTR_ERR(sde_kms->core_client);
@@ -3311,6 +3365,13 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 	rc = _sde_kms_get_splash_data(&sde_kms->splash_data);
 	if (rc)
 		SDE_DEBUG("sde splash data fetch failed: %d\n", rc);
+
+	for (i = 0; i < SDE_POWER_HANDLE_DBUS_ID_MAX; i++) {
+		priv->phandle.data_bus_handle[i].ab_rt =
+			SDE_POWER_HANDLE_CONT_SPLASH_BUS_AB_QUOTA;
+		priv->phandle.data_bus_handle[i].ib_rt =
+			SDE_POWER_HANDLE_CONT_SPLASH_BUS_IB_QUOTA;
+	}
 
 	rc = sde_power_resource_enable(&priv->phandle, sde_kms->core_client,
 		true);
@@ -3438,6 +3499,14 @@ static int sde_kms_hw_init(struct msm_kms *kms)
 			sde_kms->hw_vbif[vbif_idx] = NULL;
 			goto power_error;
 		}
+	}
+
+	sde_kms->hw_sid = sde_hw_sid_init(sde_kms->sid,
+				sde_kms->sid_len, sde_kms->catalog);
+	if (IS_ERR(sde_kms->hw_sid)) {
+		SDE_ERROR("failed to init sid %d\n", PTR_ERR(sde_kms->hw_sid));
+		sde_kms->hw_sid = NULL;
+		goto power_error;
 	}
 
 	rc = sde_core_perf_init(&sde_kms->perf, dev, sde_kms->catalog,

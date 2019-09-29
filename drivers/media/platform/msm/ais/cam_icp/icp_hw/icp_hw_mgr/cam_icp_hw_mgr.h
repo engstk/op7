@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -53,7 +53,7 @@
 #define ICP_CLK_HW_BPS          0x1
 #define ICP_CLK_HW_MAX          0x2
 
-#define ICP_OVER_CLK_THRESHOLD  15
+#define ICP_OVER_CLK_THRESHOLD  5
 
 #define CPAS_IPE0_BIT           0x1000
 #define CPAS_IPE1_BIT           0x2000
@@ -80,6 +80,8 @@
  * @fw_buf: Memory info of firmware
  * @qdss_buf: Memory info of qdss
  * @sfr_buf: Memory info for sfr buffer
+ * @shmem: Memory info for shared region
+ * @io_mem: Memory info for io region
  */
 struct icp_hfi_mem_info {
 	struct cam_mem_mgr_memory_desc qtbl;
@@ -91,6 +93,7 @@ struct icp_hfi_mem_info {
 	struct cam_mem_mgr_memory_desc qdss_buf;
 	struct cam_mem_mgr_memory_desc sfr_buf;
 	struct cam_smmu_region_info shmem;
+	struct cam_smmu_region_info io_mem;
 };
 
 /**
@@ -128,11 +131,11 @@ struct clk_work_data {
 };
 
 /**
- * struct icp_frame_info
- * @request_id: request id
- * @io_config: the address of io config
- * @hfi_cfg_io_cmd: command struct to be sent to hfi
- */
+  * struct icp_frame_info
+  * @request_id: request id
+  * @io_config: the address of io config
+  * @hfi_cfg_io_cmd: command struct to be sent to hfi
+  */
 struct icp_frame_info {
 	uint64_t request_id;
 	uint64_t io_config;
@@ -185,6 +188,7 @@ struct cam_ctx_clk_info {
 	uint32_t reserved;
 	uint64_t uncompressed_bw;
 	uint64_t compressed_bw;
+	uint64_t compressed_bw_ab;
 	int32_t clk_rate[CAM_MAX_VOTE];
 };
 /**
@@ -249,6 +253,7 @@ struct icp_cmd_generic_blob {
  * @over_clked: Over clock count
  * @uncompressed_bw: Current bandwidth voting
  * @compressed_bw: Current compressed bandwidth voting
+ * @compressed_bw_ab: Current absolute compressed bandwidth voting
  * @hw_type: IPE/BPS device type
  * @watch_dog: watchdog timer handle
  * @watch_dog_reset_counter: Counter for watch dog reset
@@ -260,6 +265,7 @@ struct cam_icp_clk_info {
 	uint32_t over_clked;
 	uint64_t uncompressed_bw;
 	uint64_t compressed_bw;
+	uint64_t compressed_bw_ab;
 	uint32_t hw_type;
 	struct cam_req_mgr_timer *watch_dog;
 	uint32_t watch_dog_reset_counter;
@@ -304,7 +310,6 @@ struct cam_icp_clk_info {
  * @ipe0_enable: Flag for IPE0
  * @ipe1_enable: Flag for IPE1
  * @bps_enable: Flag for BPS
- * @core_info: 32 bit value , tells IPE0/1 and BPS
  * @a5_dev_intf : Device interface for A5
  * @ipe0_dev_intf: Device interface for IPE0
  * @ipe1_dev_intf: Device interface for IPE1
@@ -354,14 +359,13 @@ struct cam_icp_hw_mgr {
 	bool ipe0_enable;
 	bool ipe1_enable;
 	bool bps_enable;
-	uint32_t core_info;
 	struct cam_hw_intf *a5_dev_intf;
 	struct cam_hw_intf *ipe0_dev_intf;
 	struct cam_hw_intf *ipe1_dev_intf;
 	struct cam_hw_intf *bps_dev_intf;
 	bool ipe_clk_state;
 	bool bps_clk_state;
-	bool recovery;
+	atomic_t recovery;
 };
 
 static int cam_icp_mgr_hw_close(void *hw_priv, void *hw_close_args);

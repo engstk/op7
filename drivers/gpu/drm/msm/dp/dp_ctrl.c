@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -105,7 +105,7 @@ static void dp_ctrl_video_ready(struct dp_ctrl_private *ctrl)
 	complete(&ctrl->video_comp);
 }
 
-static void dp_ctrl_abort(struct dp_ctrl *dp_ctrl)
+static void dp_ctrl_abort(struct dp_ctrl *dp_ctrl, bool reset)
 {
 	struct dp_ctrl_private *ctrl;
 
@@ -116,7 +116,7 @@ static void dp_ctrl_abort(struct dp_ctrl *dp_ctrl)
 
 	ctrl = container_of(dp_ctrl, struct dp_ctrl_private, dp_ctrl);
 
-	atomic_set(&ctrl->aborted, 1);
+	atomic_set(&ctrl->aborted, !reset);
 }
 
 static void dp_ctrl_state_ctrl(struct dp_ctrl_private *ctrl, u32 state)
@@ -170,11 +170,14 @@ static void dp_ctrl_configure_source_link_params(struct dp_ctrl_private *ctrl,
 	if (enable) {
 		ctrl->catalog->lane_mapping(ctrl->catalog, ctrl->orientation,
 						ctrl->parser->l_map);
+		ctrl->catalog->lane_pnswap(ctrl->catalog,
+						ctrl->parser->l_pnswap);
 		ctrl->catalog->mst_config(ctrl->catalog, ctrl->mst_mode);
 		ctrl->catalog->config_ctrl(ctrl->catalog,
 				ctrl->link->link_params.lane_count);
 		ctrl->catalog->mainlink_levels(ctrl->catalog,
 				ctrl->link->link_params.lane_count);
+		ctrl->catalog->fec_config(ctrl->catalog, false);
 		ctrl->catalog->mainlink_ctrl(ctrl->catalog, true);
 	} else {
 		ctrl->catalog->mainlink_ctrl(ctrl->catalog, false);
@@ -405,7 +408,7 @@ static int dp_ctrl_link_training_2(struct dp_ctrl_private *ctrl)
 	}
 	ctrl->catalog->set_pattern(ctrl->catalog, pattern);
 	ret = dp_ctrl_train_pattern_set(ctrl,
-		pattern | DP_RECOVERED_CLOCK_OUT_EN);
+		pattern | DP_LINK_SCRAMBLING_DISABLE);
 	if (ret <= 0) {
 		ret = -EINVAL;
 		goto end;

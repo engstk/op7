@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,8 @@
 #include <linux/kref.h>
 #include <linux/kernel.h>
 #include <linux/regulator/consumer.h>
+#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include "sde_rotator_hwio.h"
 #include "sde_rotator_io_util.h"
@@ -48,9 +50,16 @@
 #define SDE_MDP_HW_REV_500	SDE_MDP_REV(5, 0, 0)	/* sm8150 v1.0 */
 #define SDE_MDP_HW_REV_520	SDE_MDP_REV(5, 2, 0)	/* sdmmagpie v1.0 */
 #define SDE_MDP_HW_REV_530	SDE_MDP_REV(5, 3, 0)	/* sm6150 v1.0 */
+#define SDE_MDP_HW_REV_540	SDE_MDP_REV(5, 4, 0)	/* sdmtrinket v1.0 */
+#define SDE_MDP_HW_REV_620	SDE_MDP_REV(6, 2, 0)	/* atoll */
 
 #define SDE_MDP_VBIF_4_LEVEL_REMAPPER	4
 #define SDE_MDP_VBIF_8_LEVEL_REMAPPER	8
+
+/* XIN mapping */
+#define XIN_SSPP	0
+#define XIN_WRITEBACK	1
+#define MAX_XIN		2
 
 struct sde_mult_factor {
 	uint32_t numer;
@@ -76,11 +85,13 @@ struct sde_mdp_set_ot_params {
  * @xin_id: xin port number of vbif
  * @reg_off_mdp_clk_ctrl: reg offset for vbif clock control
  * @bit_off_mdp_clk_ctrl: bit offset for vbif clock control
+ * @xin_timeout: bit position indicates timeout on corresponding xin id
  */
 struct sde_mdp_vbif_halt_params {
 	u32 xin_id;
 	u32 reg_off_mdp_clk_ctrl;
 	u32 bit_off_mdp_clk_ctrl;
+	u32 xin_timeout;
 };
 
 enum sde_bus_vote_type {
@@ -224,6 +235,7 @@ struct sde_rot_data_type {
 	u32 mdss_version;
 
 	struct platform_device *pdev;
+	struct platform_device *parent_pdev;
 	struct sde_io_data sde_io;
 	struct sde_io_data vbif_nrt_io;
 	char __iomem *mdp_base;
@@ -251,6 +263,8 @@ struct sde_rot_data_type {
 	u32 *vbif_rt_qos;
 	u32 *vbif_nrt_qos;
 	u32 npriority_lvl;
+
+	u32 vbif_xin_id[MAX_XIN];
 
 	struct pm_qos_request pm_qos_rot_cpu_req;
 	u32 rot_pm_qos_cpu_count;
@@ -303,6 +317,9 @@ u32 sde_apply_comp_ratio_factor(u32 quota,
 u32 sde_mdp_get_ot_limit(u32 width, u32 height, u32 pixfmt, u32 fps, u32 is_rd);
 
 void sde_mdp_set_ot_limit(struct sde_mdp_set_ot_params *params);
+
+void vbif_lock(struct platform_device *parent_pdev);
+void vbif_unlock(struct platform_device *parent_pdev);
 
 void sde_mdp_halt_vbif_xin(struct sde_mdp_vbif_halt_params *params);
 

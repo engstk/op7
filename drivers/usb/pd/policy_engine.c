@@ -463,6 +463,7 @@ struct usbpd {
 	struct mutex		svid_handler_lock;
 	struct list_head	svid_handlers;
 	ktime_t			svdm_start_time;
+	bool			vdm_in_suspend;
 
 	struct list_head	instance;
 
@@ -508,6 +509,21 @@ enum plug_orientation usbpd_get_plug_orientation(struct usbpd *pd)
 	return val.intval;
 }
 EXPORT_SYMBOL(usbpd_get_plug_orientation);
+
+static unsigned int get_connector_type(struct usbpd *pd)
+{
+	int ret;
+	union power_supply_propval val;
+
+	ret = power_supply_get_property(pd->usb_psy,
+		POWER_SUPPLY_PROP_CONNECTOR_TYPE, &val);
+
+	if (ret) {
+		dev_err(&pd->dev, "Unable to read CONNECTOR TYPE: %d\n", ret);
+		return ret;
+	}
+	return val.intval;
+}
 
 static inline void stop_usb_host(struct usbpd *pd)
 {
@@ -643,15 +659,21 @@ static struct usbpd_svid_handler *find_svid_handler(struct usbpd *pd, u16 svid)
 {
 	struct usbpd_svid_handler *handler;
 
-	mutex_lock(&pd->svid_handler_lock);
+	/* in_interrupt() == true when handling VDM RX during suspend */
+	if (!in_interrupt())
+		mutex_lock(&pd->svid_handler_lock);
+
 	list_for_each_entry(handler, &pd->svid_handlers, entry) {
 		if (svid == handler->svid) {
-			mutex_unlock(&pd->svid_handler_lock);
+			if (!in_interrupt())
+				mutex_unlock(&pd->svid_handler_lock);
 			return handler;
 		}
 	}
 
-	mutex_unlock(&pd->svid_handler_lock);
+	if (!in_interrupt())
+		mutex_unlock(&pd->svid_handler_lock);
+
 	return NULL;
 }
 
@@ -884,10 +906,12 @@ static void kick_sm(struct usbpd *pd, int ms)
 	pm_stay_awake(&pd->dev);
 	pd->sm_queued = true;
 
-	if (ms)
+	if (ms) {
+		usbpd_dbg(&pd->dev, "delay %d ms", ms);
 		hrtimer_start(&pd->timer, ms_to_ktime(ms), HRTIMER_MODE_REL);
-	else
+	} else {
 		queue_work(pd->wq, &pd->sm_work);
+	}
 }
 
 static void phy_sig_received(struct usbpd *pd, enum pd_sig_type sig)
@@ -1056,6 +1080,8 @@ queue_rx:
 	return rx_msg;	/* queue it for usbpd_sm */
 }
 
+static void handle_vdm_rx(struct usbpd *pd, struct rx_msg *rx_msg);
+
 static void phy_msg_received(struct usbpd *pd, enum pd_sop_type sop,
 		u8 *buf, size_t len)
 {
@@ -1128,11 +1154,21 @@ static void phy_msg_received(struct usbpd *pd, enum pd_sop_type sop,
 			return;
 	}
 
+	if (pd->vdm_in_suspend && msg_type == MSG_VDM) {
+		usbpd_dbg(&pd->dev, "Skip wq and handle VDM directly\n");
+		handle_vdm_rx(pd, rx_msg);
+		kfree(rx_msg);
+		return;
+	}
+
 	spin_lock_irqsave(&pd->rx_lock, flags);
 	list_add_tail(&rx_msg->entry, &pd->rx_q);
 	spin_unlock_irqrestore(&pd->rx_lock, flags);
 
-	kick_sm(pd, 0);
+	if (!work_busy(&pd->sm_work))
+		kick_sm(pd, 0);
+	else
+		usbpd_dbg(&pd->dev, "usbpd_sm already running\n");
 }
 
 static void phy_shutdown(struct usbpd *pd)
@@ -1154,7 +1190,6 @@ static enum hrtimer_restart pd_timeout(struct hrtimer *timer)
 {
 	struct usbpd *pd = container_of(timer, struct usbpd, timer);
 
-	usbpd_dbg(&pd->dev, "timeout");
 	queue_work(pd->wq, &pd->sm_work);
 
 	return HRTIMER_NORESTART;
@@ -1241,6 +1276,8 @@ static void reset_vdm_state(struct usbpd *pd)
 	mutex_lock(&pd->svid_handler_lock);
 	list_for_each_entry(handler, &pd->svid_handlers, entry) {
 		if (handler->discovered) {
+			usbpd_dbg(&pd->dev, "Notify SVID: 0x%04x disconnect\n",
+				handler->svid);
 			handler->disconnect(handler);
 			handler->discovered = false;
 		}
@@ -1256,6 +1293,7 @@ static void reset_vdm_state(struct usbpd *pd)
 	kfree(pd->vdm_tx);
 	pd->vdm_tx = NULL;
 	pd->ss_lane_svid = 0x0;
+	pd->vdm_in_suspend = false;
 }
 
 static inline void rx_msg_cleanup(struct usbpd *pd)
@@ -1466,9 +1504,12 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 				!pd->in_explicit_contract)
 			stop_usb_host(pd);
 
+		if (!pd->in_explicit_contract)
+			dual_role_instance_changed(pd->dual_role);
+
 		pd->in_explicit_contract = true;
 
-		if (pd->vdm_tx)
+		if (pd->vdm_tx && !pd->sm_queued)
 			kick_sm(pd, 0);
 		else if (pd->current_dr == DR_DFP && pd->vdm_state == VDM_NONE)
 			usbpd_send_svdm(pd, USBPD_SID,
@@ -1479,7 +1520,6 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 
 		kobject_uevent(&pd->dev.kobj, KOBJ_CHANGE);
 		complete(&pd->is_ready);
-		dual_role_instance_changed(pd->dual_role);
 		break;
 
 	case PE_PRS_SRC_SNK_TRANSITION_TO_OFF:
@@ -1654,6 +1694,9 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 		break;
 
 	case PE_SNK_READY:
+		if (!pd->in_explicit_contract)
+			dual_role_instance_changed(pd->dual_role);
+
 		pd->in_explicit_contract = true;
 
 		if (pd->vdm_tx)
@@ -1665,7 +1708,6 @@ static void usbpd_set_state(struct usbpd *pd, enum usbpd_state next_state)
 
 		kobject_uevent(&pd->dev.kobj, KOBJ_CHANGE);
 		complete(&pd->is_ready);
-		dual_role_instance_changed(pd->dual_role);
 		break;
 
 	case PE_SNK_TRANSITION_TO_DEFAULT:
@@ -1743,7 +1785,9 @@ int usbpd_register_svid(struct usbpd *pd, struct usbpd_svid_handler *hdlr)
 
 		for (i = 0; i < pd->num_svids; i++) {
 			if (pd->discovered_svids[i] == hdlr->svid) {
-				hdlr->connect(hdlr);
+				usbpd_dbg(&pd->dev, "Notify SVID: 0x%04x connect\n",
+						hdlr->svid);
+				hdlr->connect(hdlr, pd->peer_usb_comm);
 				hdlr->discovered = true;
 				break;
 			}
@@ -1769,8 +1813,13 @@ int usbpd_send_vdm(struct usbpd *pd, u32 vdm_hdr, const u32 *vdos, int num_vdos)
 {
 	struct vdm_tx *vdm_tx;
 
-	if (pd->vdm_tx)
-		return -EBUSY;
+	if (pd->vdm_tx) {
+		usbpd_warn(&pd->dev, "Discarding previously queued VDM tx (SVID:0x%04x)\n",
+				VDM_HDR_SVID(pd->vdm_tx->data[0]));
+
+		kfree(pd->vdm_tx);
+		pd->vdm_tx = NULL;
+	}
 
 	vdm_tx = kzalloc(sizeof(*vdm_tx), GFP_KERNEL);
 	if (!vdm_tx)
@@ -1783,6 +1832,7 @@ int usbpd_send_vdm(struct usbpd *pd, u32 vdm_hdr, const u32 *vdos, int num_vdos)
 
 	/* VDM will get sent in PE_SRC/SNK_READY state handling */
 	pd->vdm_tx = vdm_tx;
+	pd->vdm_in_suspend = false;
 
 	/* slight delay before queuing to prioritize handling of incoming VDM */
 	if (pd->in_explicit_contract)
@@ -1804,6 +1854,14 @@ int usbpd_send_svdm(struct usbpd *pd, u16 svid, u8 cmd,
 	return usbpd_send_vdm(pd, svdm_hdr, vdos, num_vdos);
 }
 EXPORT_SYMBOL(usbpd_send_svdm);
+
+void usbpd_vdm_in_suspend(struct usbpd *pd, bool in_suspend)
+{
+	usbpd_dbg(&pd->dev, "VDM in_suspend:%d\n", in_suspend);
+
+	pd->vdm_in_suspend = in_suspend;
+}
+EXPORT_SYMBOL(usbpd_vdm_in_suspend);
 
 static void handle_vdm_rx(struct usbpd *pd, struct rx_msg *rx_msg)
 {
@@ -1854,17 +1912,17 @@ static void handle_vdm_rx(struct usbpd *pd, struct rx_msg *rx_msg)
 		return;
 	}
 
-	/* if this interrupts a previous exchange, abort queued response */
-	if (cmd_type == SVDM_CMD_TYPE_INITIATOR && pd->vdm_tx) {
-		usbpd_dbg(&pd->dev, "Discarding previously queued SVDM tx (SVID:0x%04x)\n",
-				VDM_HDR_SVID(pd->vdm_tx->data[0]));
-
-		kfree(pd->vdm_tx);
-		pd->vdm_tx = NULL;
-	}
+	if (cmd_type != SVDM_CMD_TYPE_INITIATOR &&
+			pd->current_state != PE_SRC_STARTUP_WAIT_FOR_VDM_RESP)
+		start_src_ams(pd, false);
 
 	if (handler && handler->svdm_received) {
 		handler->svdm_received(handler, cmd, cmd_type, vdos, num_vdos);
+
+		/* handle any previously queued TX */
+		if (pd->vdm_tx && !pd->sm_queued)
+			kick_sm(pd, 0);
+
 		return;
 	}
 
@@ -2016,7 +2074,10 @@ static void handle_vdm_rx(struct usbpd *pd, struct rx_msg *rx_msg)
 				if (svid) {
 					handler = find_svid_handler(pd, svid);
 					if (handler) {
-						handler->connect(handler);
+						usbpd_dbg(&pd->dev, "Notify SVID: 0x%04x connect\n",
+							handler->svid);
+						handler->connect(handler,
+							pd->peer_usb_comm);
 						handler->discovered = true;
 					}
 				}
@@ -2364,6 +2425,7 @@ enable_reg:
 	if (!pd->vbus) {
 		pd->vbus = devm_regulator_get(pd->dev.parent, "vbus");
 		if (IS_ERR(pd->vbus)) {
+			pd->vbus = NULL;
 			usbpd_err(&pd->dev, "Unable to get vbus\n");
 			return -EAGAIN;
 		}
@@ -2671,15 +2733,19 @@ static void usbpd_sm(struct work_struct *w)
 		if (IS_CTRL(rx_msg, MSG_GET_SOURCE_CAP)) {
 			pd->current_state = PE_SRC_SEND_CAPABILITIES;
 			kick_sm(pd, 0);
+			break;
 		} else if (IS_CTRL(rx_msg, MSG_GET_SINK_CAP)) {
 			ret = pd_send_msg(pd, MSG_SINK_CAPABILITIES,
 					pd->sink_caps, pd->num_sink_caps,
 					SOP_MSG);
-			if (ret)
+			if (ret) {
 				usbpd_set_state(pd, PE_SEND_SOFT_RESET);
+				break;
+			}
 		} else if (IS_DATA(rx_msg, MSG_REQUEST)) {
 			pd->rdo = *(u32 *)rx_msg->payload;
 			usbpd_set_state(pd, PE_SRC_NEGOTIATE_CAPABILITY);
+			break;
 		} else if (IS_CTRL(rx_msg, MSG_DR_SWAP)) {
 			if (pd->vdm_state == MODE_ENTERED) {
 				usbpd_set_state(pd, PE_SRC_HARD_RESET);
@@ -2713,8 +2779,8 @@ static void usbpd_sm(struct work_struct *w)
 			vconn_swap(pd);
 		} else if (IS_DATA(rx_msg, MSG_VDM)) {
 			handle_vdm_rx(pd, rx_msg);
-			if (!pd->vdm_tx)
-				start_src_ams(pd, false);
+			if (pd->vdm_tx) /* response sent after delay */
+				break;
 		} else if (IS_CTRL(rx_msg, MSG_GET_SOURCE_CAP_EXTENDED)) {
 			handle_get_src_cap_extended(pd);
 		} else if (IS_EXT(rx_msg, MSG_GET_BATTERY_CAP)) {
@@ -2735,7 +2801,13 @@ static void usbpd_sm(struct work_struct *w)
 			if (ret)
 				usbpd_set_state(pd, PE_SEND_SOFT_RESET);
 			break;
-		} else if (pd->send_pr_swap) {
+		}
+
+		if (pd->current_state != PE_SRC_READY)
+			break;
+
+		/* handle outgoing requests */
+		if (pd->send_pr_swap) {
 			pd->send_pr_swap = false;
 			ret = pd_send_msg(pd, MSG_PR_SWAP, NULL, 0, SOP_MSG);
 			if (ret) {
@@ -2760,6 +2832,7 @@ static void usbpd_sm(struct work_struct *w)
 		} else {
 			start_src_ams(pd, false);
 		}
+
 		break;
 
 	case PE_SRC_TRANSITION_TO_DEFAULT:
@@ -3004,7 +3077,8 @@ static void usbpd_sm(struct work_struct *w)
 			break;
 		} else if (IS_DATA(rx_msg, MSG_VDM)) {
 			handle_vdm_rx(pd, rx_msg);
-			break;
+			if (pd->vdm_tx) /* response sent after delay */
+				break;
 		} else if (IS_DATA(rx_msg, MSG_ALERT)) {
 			u32 ado;
 
@@ -3031,6 +3105,7 @@ static void usbpd_sm(struct work_struct *w)
 			memcpy(&pd->src_cap_ext_db, rx_msg->payload,
 				sizeof(pd->src_cap_ext_db));
 			complete(&pd->is_ready);
+			break;
 		} else if (IS_EXT(rx_msg, MSG_PPS_STATUS)) {
 			if (rx_msg->data_len != sizeof(pd->pps_status_db)) {
 				usbpd_err(&pd->dev, "Invalid pps status db\n");
@@ -3039,6 +3114,7 @@ static void usbpd_sm(struct work_struct *w)
 			memcpy(&pd->pps_status_db, rx_msg->payload,
 				sizeof(pd->pps_status_db));
 			complete(&pd->is_ready);
+			break;
 		} else if (IS_EXT(rx_msg, MSG_STATUS)) {
 			if (rx_msg->data_len != PD_STATUS_DB_LEN) {
 				usbpd_err(&pd->dev, "Invalid status db\n");
@@ -3048,6 +3124,7 @@ static void usbpd_sm(struct work_struct *w)
 				sizeof(pd->status_db));
 			kobject_uevent(&pd->dev.kobj, KOBJ_CHANGE);
 			complete(&pd->is_ready);
+			break;
 		} else if (IS_EXT(rx_msg, MSG_BATTERY_CAPABILITIES)) {
 			if (rx_msg->data_len != PD_BATTERY_CAP_DB_LEN) {
 				usbpd_err(&pd->dev, "Invalid battery cap db\n");
@@ -3056,6 +3133,7 @@ static void usbpd_sm(struct work_struct *w)
 			memcpy(&pd->battery_cap_db, rx_msg->payload,
 				sizeof(pd->battery_cap_db));
 			complete(&pd->is_ready);
+			break;
 		} else if (IS_EXT(rx_msg, MSG_BATTERY_STATUS)) {
 			if (rx_msg->data_len != sizeof(pd->battery_sts_dobj)) {
 				usbpd_err(&pd->dev, "Invalid bat sts dobj\n");
@@ -3064,6 +3142,7 @@ static void usbpd_sm(struct work_struct *w)
 			memcpy(&pd->battery_sts_dobj, rx_msg->payload,
 				sizeof(pd->battery_sts_dobj));
 			complete(&pd->is_ready);
+			break;
 		} else if (IS_CTRL(rx_msg, MSG_GET_SOURCE_CAP_EXTENDED)) {
 			handle_get_src_cap_extended(pd);
 		} else if (IS_EXT(rx_msg, MSG_GET_BATTERY_CAP)) {
@@ -3139,7 +3218,13 @@ static void usbpd_sm(struct work_struct *w)
 			} else if (pd->send_request) {
 				pd->send_request = false;
 				usbpd_set_state(pd, PE_SNK_SELECT_CAPABILITY);
-			} else if (pd->send_pr_swap) {
+			}
+
+			if (pd->current_state != PE_SNK_READY)
+				break;
+
+			/* handle outgoing requests */
+			if (pd->send_pr_swap) {
 				pd->send_pr_swap = false;
 				ret = pd_send_msg(pd, MSG_PR_SWAP, NULL, 0,
 						SOP_MSG);
@@ -3316,7 +3401,7 @@ sm_done:
 	spin_unlock_irqrestore(&pd->rx_lock, flags);
 
 	/* requeue if there are any new/pending RX messages */
-	if (!ret)
+	if (!ret && !pd->sm_queued)
 		kick_sm(pd, 0);
 
 	if (!pd->sm_queued)
@@ -3408,7 +3493,12 @@ static int psy_changed(struct notifier_block *nb, unsigned long evt, void *ptr)
 		usbpd_dbg(&pd->dev, "hard reset: typec mode:%d present:%d\n",
 			typec_mode, pd->vbus_present);
 		pd->typec_mode = typec_mode;
-		kick_sm(pd, 0);
+
+		if (!work_busy(&pd->sm_work))
+			kick_sm(pd, 0);
+		else
+			usbpd_dbg(&pd->dev, "usbpd_sm already running\n");
+
 		return 0;
 	}
 
@@ -3549,6 +3639,8 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 		enum dual_role_property prop, const unsigned int *val)
 {
 	struct usbpd *pd = dual_role_get_drvdata(dual_role);
+	union power_supply_propval value;
+	int wait_count = 5;
 	bool do_swap = false;
 
 	if (!pd)
@@ -3571,8 +3663,32 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 		set_power_role(pd, PR_NONE);
 
 		/* wait until it takes effect */
-		while (pd->forced_pr != POWER_SUPPLY_TYPEC_PR_NONE)
+		while (pd->forced_pr != POWER_SUPPLY_TYPEC_PR_NONE &&
+				--wait_count)
 			msleep(20);
+
+		if (!wait_count) {
+			usbpd_err(&pd->dev, "setting mode timed out\n");
+			/* Setting it to DRP. HW can figure out new mode */
+			value.intval = POWER_SUPPLY_TYPEC_PR_DUAL;
+			power_supply_set_property(pd->usb_psy,
+				POWER_SUPPLY_PROP_TYPEC_POWER_ROLE, &value);
+			return -ETIMEDOUT;
+		}
+
+		/* if we cannot have a valid connection, fallback to old role */
+		wait_count = 5;
+		while (pd->current_pr == PR_NONE && --wait_count)
+			msleep(300);
+
+		if (!wait_count) {
+			usbpd_err(&pd->dev, "setting mode timed out\n");
+			/* Setting it to DRP. HW can figure out new mode */
+			value.intval = POWER_SUPPLY_TYPEC_PR_DUAL;
+			power_supply_set_property(pd->usb_psy,
+				POWER_SUPPLY_PROP_TYPEC_POWER_ROLE, &value);
+			return -ETIMEDOUT;
+		}
 
 		break;
 
@@ -3594,12 +3710,6 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 			if (pd->current_state != PE_SRC_READY &&
 					pd->current_state != PE_SNK_READY) {
 				usbpd_err(&pd->dev, "data_role swap not allowed: PD not in Ready state\n");
-				return -EAGAIN;
-			}
-
-			if (pd->current_state == PE_SNK_READY &&
-					!is_sink_tx_ok(pd)) {
-				usbpd_err(&pd->dev, "Rp indicates SinkTxNG\n");
 				return -EAGAIN;
 			}
 
@@ -3654,12 +3764,6 @@ static int usbpd_dr_set_property(struct dual_role_phy_instance *dual_role,
 			if (pd->current_state != PE_SRC_READY &&
 					pd->current_state != PE_SNK_READY) {
 				usbpd_err(&pd->dev, "power_role swap not allowed: PD not in Ready state\n");
-				return -EAGAIN;
-			}
-
-			if (pd->current_state == PE_SNK_READY &&
-					!is_sink_tx_ok(pd)) {
-				usbpd_err(&pd->dev, "Rp indicates SinkTxNG\n");
 				return -EAGAIN;
 			}
 
@@ -3958,7 +4062,7 @@ static ssize_t select_pdo_store(struct device *dev,
 	mutex_lock(&pd->swap_lock);
 
 	/* Only allowed if we are already in explicit sink contract */
-	if (pd->current_state != PE_SNK_READY || !is_sink_tx_ok(pd)) {
+	if (pd->current_state != PE_SNK_READY) {
 		usbpd_err(&pd->dev, "select_pdo: Cannot select new PDO yet\n");
 		ret = -EBUSY;
 		goto out;
@@ -4004,7 +4108,7 @@ static ssize_t select_pdo_store(struct device *dev,
 	if (pd->selected_pdo != pd->requested_pdo ||
 			pd->current_voltage != pd->requested_voltage) {
 		usbpd_err(&pd->dev, "select_pdo: request rejected\n");
-		ret = -EINVAL;
+		ret = -ECONNREFUSED;
 	}
 
 out:
@@ -4110,7 +4214,7 @@ static int trigger_tx_msg(struct usbpd *pd, bool *msg_tx_flag)
 	int ret = 0;
 
 	/* Only allowed if we are already in explicit sink contract */
-	if (pd->current_state != PE_SNK_READY || !is_sink_tx_ok(pd)) {
+	if (pd->current_state != PE_SNK_READY) {
 		usbpd_err(&pd->dev, "%s: Cannot send msg\n", __func__);
 		ret = -EBUSY;
 		goto out;
@@ -4525,12 +4629,19 @@ struct usbpd *usbpd_create(struct device *parent)
 	pd->dr_desc.set_property = usbpd_dr_set_property;
 	pd->dr_desc.property_is_writeable = usbpd_dr_prop_writeable;
 
-	pd->dual_role = devm_dual_role_instance_register(&pd->dev,
-			&pd->dr_desc);
-	if (IS_ERR(pd->dual_role)) {
-		usbpd_err(&pd->dev, "could not register dual_role instance\n");
+	ret = get_connector_type(pd);
+
+	if (ret < 0)
 		goto put_psy;
-	} else {
+
+	/* For non-TypeC connector, it will be handled elsewhere */
+	if (ret != POWER_SUPPLY_CONNECTOR_MICRO_USB) {
+		pd->dual_role = devm_dual_role_instance_register(&pd->dev,
+				&pd->dr_desc);
+		if (IS_ERR(pd->dual_role)) {
+			usbpd_err(&pd->dev, "could not register dual_role instance\n");
+			goto put_psy;
+		}
 		pd->dual_role->drv_data = pd;
 	}
 

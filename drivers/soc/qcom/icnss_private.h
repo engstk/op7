@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -12,6 +12,11 @@
 
 #ifndef __ICNSS_PRIVATE_H__
 #define __ICNSS_PRIVATE_H__
+
+#include <linux/adc-tm-clients.h>
+#include <linux/iio/consumer.h>
+#include <linux/kobject.h>
+#include <linux/esoc_client.h>
 
 #define icnss_ipc_log_string(_x...) do {				\
 	if (icnss_ipc_log_context)					\
@@ -115,6 +120,8 @@ enum icnss_driver_event_type {
 	ICNSS_DRIVER_EVENT_UNREGISTER_DRIVER,
 	ICNSS_DRIVER_EVENT_PD_SERVICE_DOWN,
 	ICNSS_DRIVER_EVENT_FW_EARLY_CRASH_IND,
+	ICNSS_DRIVER_EVENT_IDLE_SHUTDOWN,
+	ICNSS_DRIVER_EVENT_IDLE_RESTART,
 	ICNSS_DRIVER_EVENT_MAX,
 };
 
@@ -156,6 +163,11 @@ enum icnss_driver_state {
 	ICNSS_DRIVER_UNLOADING,
 	ICNSS_REJUVENATE,
 	ICNSS_MODE_ON,
+	ICNSS_BLOCK_SHUTDOWN,
+	ICNSS_PDR,
+	ICNSS_CLK_UP,
+	ICNSS_ESOC_OFF,
+	ICNSS_MODEM_CRASHED,
 };
 
 struct ce_irq_list {
@@ -238,6 +250,9 @@ struct icnss_stats {
 	uint32_t rejuvenate_ack_req;
 	uint32_t rejuvenate_ack_resp;
 	uint32_t rejuvenate_ack_err;
+	uint32_t vbatt_req;
+	uint32_t vbatt_resp;
+	uint32_t vbatt_req_err;
 };
 
 #define WLFW_MAX_TIMESTAMP_LEN 32
@@ -354,7 +369,23 @@ struct icnss_priv {
 	bool is_hyp_disabled;
 	uint32_t fw_error_fatal_irq;
 	uint32_t fw_early_crash_irq;
+	struct completion unblock_shutdown;
+	struct adc_tm_param vph_monitor_params;
+	struct adc_tm_chip *adc_tm_dev;
+	struct iio_channel *channel;
+	uint64_t vph_pwr;
+	bool vbatt_supported;
 	char function_name[WLFW_FUNCTION_NAME_LEN + 1];
+	struct kobject *icnss_kobject;
+	atomic_t is_shutdown;
+	bool is_ssr;
+	bool clk_monitor_enable;
+	void *ext_modem_notify_handler;
+	struct notifier_block ext_modem_ssr_nb;
+	struct completion clk_complete;
+	struct esoc_desc *esoc_client;
+	struct esoc_client_hook esoc_ops;
+	struct completion notif_complete;
 };
 
 int icnss_call_driver_uevent(struct icnss_priv *priv,

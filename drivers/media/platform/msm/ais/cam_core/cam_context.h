@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -21,6 +21,9 @@
 
 /* Forward declarations */
 struct cam_context;
+
+/* max device name string length*/
+#define CAM_CTX_DEV_NAME_MAX_LENGTH 20
 
 /* max request number */
 #define CAM_CTX_REQ_MAX              20
@@ -180,10 +183,11 @@ struct cam_ctx_ops {
  * @refcount:              Context object refcount
  * @node:                  The main node to which this context belongs
  * @sync_mutex:            mutex to sync with sync cb thread
+ * @last_flush_req:        Last request to flush
  *
  */
 struct cam_context {
-	const char                  *dev_name;
+	char                         dev_name[CAM_CTX_DEV_NAME_MAX_LENGTH];
 	uint64_t                     dev_id;
 	uint32_t                     ctx_id;
 	struct list_head             list;
@@ -215,6 +219,7 @@ struct cam_context {
 	struct kref                  refcount;
 	void                        *node;
 	struct mutex                 sync_mutex;
+	uint32_t                     last_flush_req;
 };
 
 /**

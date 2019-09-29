@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -352,6 +352,11 @@ static int do_clk_scaling(void)
 	int new_th_idx = 1;
 	struct clk_scaling_db *clk_scaling;
 
+	if (atomic_read(&ipa3_ctx->ipa_clk_vote) == 0) {
+		IPA_PM_DBG("IPA clock is gated\n");
+		return 0;
+	}
+
 	clk_scaling = &ipa_pm_ctx->clk_scaling;
 
 	mutex_lock(&ipa_pm_ctx->client_mutex);
@@ -363,7 +368,7 @@ static int do_clk_scaling(void)
 	mutex_unlock(&ipa_pm_ctx->client_mutex);
 
 	for (i = 0; i < clk_scaling->threshold_size; i++) {
-		if (tput > clk_scaling->current_threshold[i])
+		if (tput >= clk_scaling->current_threshold[i])
 			new_th_idx++;
 	}
 
@@ -528,15 +533,19 @@ static int find_next_open_array_element(const char *name)
  */
 static int add_client_to_exception_list(u32 hdl)
 {
-	int i;
+	int i, len = 0;
 	struct ipa_pm_exception_list *exception;
 
 	mutex_lock(&ipa_pm_ctx->client_mutex);
+	len = strlen(ipa_pm_ctx->clients[hdl]->name);
 	for (i = 0; i < ipa_pm_ctx->clk_scaling.exception_size; i++) {
 		exception = &ipa_pm_ctx->clk_scaling.exception_list[i];
 		if (strnstr(exception->clients, ipa_pm_ctx->clients[hdl]->name,
-			strlen(exception->clients))) {
+			len) && (strlen(exception->clients)
+			== len)) {
 			exception->pending--;
+			IPA_PM_DBG("Pending: %d\n",
+			exception->pending);
 
 			if (exception->pending < 0) {
 				WARN_ON(1);
@@ -570,6 +579,8 @@ static int remove_client_from_exception_list(u32 hdl)
 		exception = &ipa_pm_ctx->clk_scaling.exception_list[i];
 		if (exception->bitmask & (1 << hdl)) {
 			exception->pending++;
+			IPA_PM_DBG("Pending: %d\n",
+			exception->pending);
 			exception->bitmask &= ~(1 << hdl);
 		}
 	}
@@ -653,6 +664,7 @@ int ipa_pm_init(struct ipa_pm_init_params *params)
 				clk_scaling->exception_list[i].pending++;
 		}
 
+		/* for the first client */
 		clk_scaling->exception_list[i].pending++;
 		IPA_PM_DBG("Pending: %d\n",
 			clk_scaling->exception_list[i].pending);
@@ -750,6 +762,8 @@ int ipa_pm_register(struct ipa_pm_register_params *params, u32 *hdl)
 	client->skip_clk_vote = params->skip_clk_vote;
 	wlock = &client->wlock;
 	wakeup_source_init(wlock, client->name);
+
+	init_completion(&client->complete);
 
 	/* add client to exception list */
 	if (add_client_to_exception_list(*hdl)) {
@@ -945,7 +959,7 @@ static int ipa_pm_activate_helper(struct ipa_pm_client *client, bool sync)
 	}
 
 	client->state = IPA_PM_ACTIVATE_IN_PROGRESS;
-	init_completion(&client->complete);
+	reinit_completion(&client->complete);
 	queue_work(ipa_pm_ctx->wq, &client->activate_work);
 	spin_unlock_irqrestore(&client->state_lock, flags);
 	IPA_PM_DBG_STATE(client->hdl, client->name, client->state);
@@ -1274,6 +1288,14 @@ int ipa_pm_set_throughput(u32 hdl, int throughput)
 	spin_unlock_irqrestore(&client->state_lock, flags);
 
 	return 0;
+}
+
+void ipa_pm_set_clock_index(int index)
+{
+	if (ipa_pm_ctx && index >= 0)
+		ipa_pm_ctx->clk_scaling.cur_vote = index;
+
+	IPA_PM_DBG("Setting pm clock vote to %d\n", index);
 }
 
 /**

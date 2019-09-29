@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -24,6 +24,9 @@
 #define A6XX_NUM_AXI_ARB_BLOCKS 2
 #define A6XX_NUM_XIN_AXI_BLOCKS 5
 #define A6XX_NUM_XIN_CORE_BLOCKS 4
+
+/* Snapshot section size of each CP preemption record for A6XX  */
+#define A6XX_SNAPSHOT_CP_CTXRECORD_SIZE_IN_BYTES (64 * 1024)
 
 static const unsigned int a6xx_gras_cluster[] = {
 	0x8000, 0x8006, 0x8010, 0x8092, 0x8094, 0x809D, 0x80A0, 0x80A6,
@@ -329,6 +332,13 @@ static const unsigned int a6xx_pre_crashdumper_registers[] = {
 	0x210, 0x213,
 	/* CP: CP_STATUS_1 */
 	0x825, 0x825,
+};
+
+static const unsigned int a6xx_gmu_wrapper_registers[] = {
+	/* GMU CX */
+	0x1F840, 0x1F840, 0x1F844, 0x1F845, 0x1F887, 0x1F889,
+	/* GMU AO*/
+	0x23B0C, 0x23B0E, 0x23B15, 0x23B15,
 };
 
 enum a6xx_debugbus_id {
@@ -1497,6 +1507,32 @@ static void _a6xx_do_crashdump(struct kgsl_device *device)
 	crash_dump_valid = true;
 }
 
+/* Snapshot the preemption related buffers */
+size_t a6xx_snapshot_preemption(struct kgsl_device *device,
+	u8 *buf, size_t remain, void *priv)
+{
+	struct kgsl_memdesc *memdesc = priv;
+	struct kgsl_snapshot_gpu_object_v2 *header =
+		(struct kgsl_snapshot_gpu_object_v2 *)buf;
+	u8 *ptr = buf + sizeof(*header);
+
+	if (remain < (A6XX_SNAPSHOT_CP_CTXRECORD_SIZE_IN_BYTES +
+						sizeof(*header))) {
+		SNAPSHOT_ERR_NOMEM(device, "PREEMPTION RECORD");
+		return 0;
+	}
+
+	header->size = A6XX_SNAPSHOT_CP_CTXRECORD_SIZE_IN_BYTES >> 2;
+	header->gpuaddr = memdesc->gpuaddr;
+	header->ptbase =
+		kgsl_mmu_pagetable_get_ttbr0(device->mmu.defaultpagetable);
+	header->type = SNAPSHOT_GPU_OBJECT_GLOBAL;
+
+	memcpy(ptr, memdesc->hostptr, A6XX_SNAPSHOT_CP_CTXRECORD_SIZE_IN_BYTES);
+
+	return A6XX_SNAPSHOT_CP_CTXRECORD_SIZE_IN_BYTES + sizeof(*header);
+}
+
 /*
  * a6xx_snapshot() - A6XX GPU snapshot function
  * @adreno_dev: Device being snapshotted
@@ -1535,6 +1571,11 @@ void a6xx_snapshot(struct adreno_device *adreno_dev,
 	/* Return if the GX is off */
 	if (!gx_on)
 		return;
+
+	if (adreno_is_a610(adreno_dev))
+		adreno_snapshot_registers(device, snapshot,
+			a6xx_gmu_wrapper_registers,
+			ARRAY_SIZE(a6xx_gmu_wrapper_registers) / 2);
 
 	/* Dump the registers which get affected by crash dumper trigger */
 	kgsl_snapshot_add_section(device, KGSL_SNAPSHOT_SECTION_REGS,
@@ -1814,6 +1855,10 @@ void a6xx_crashdump_init(struct adreno_device *adreno_dev)
 	/* Calculate the script and data size for MVC registers */
 	for (i = 0; i < ARRAY_SIZE(a6xx_clusters); i++) {
 		struct a6xx_cluster_registers *cluster = &a6xx_clusters[i];
+
+		/* 16 bytes if cluster sel exists */
+		if (cluster->sel)
+			script_size += 16;
 
 		for (j = 0; j < A6XX_NUM_CTXTS; j++) {
 

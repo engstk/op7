@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,9 @@
 #include <drm/drm_mipi_dsi.h>
 #include "msm_drv.h"
 
+#define MAX_EXT_BRIDGE_PORT_CONFIG             16
+#define MAX_DSI_CTRLS_PER_DISPLAY             2
+
 #define DSI_H_TOTAL(t) (((t)->h_active) + ((t)->h_back_porch) + \
 			((t)->h_sync_width) + ((t)->h_front_porch))
 
@@ -33,6 +36,16 @@
 			value = (t)->h_active;\
 		value = value + (t)->h_back_porch + (t)->h_sync_width +\
 			(t)->h_front_porch;\
+		value;\
+	})
+
+#define DSI_H_ACTIVE_DSC(t) \
+	({\
+		u64 value;\
+		if ((t)->dsc_enabled && (t)->dsc)\
+			value = (t)->dsc->pclk_per_line;\
+		else\
+			value = (t)->h_active;\
 		value;\
 	})
 
@@ -82,6 +95,7 @@ enum dsi_op_mode {
  * @DSI_MODE_FLAG_DMS: Seamless transition is dynamic mode switch
  * @DSI_MODE_FLAG_VRR: Seamless transition is DynamicFPS.
  *                     New timing values are sent from DAL.
+ * @DSI_MODE_FLAG_DYN_CLK: Seamless transition is dynamic clock change
  */
 enum dsi_mode_flags {
 	DSI_MODE_FLAG_SEAMLESS			= BIT(0),
@@ -89,6 +103,7 @@ enum dsi_mode_flags {
 	DSI_MODE_FLAG_VBLANK_PRE_MODESET	= BIT(2),
 	DSI_MODE_FLAG_DMS			= BIT(3),
 	DSI_MODE_FLAG_VRR			= BIT(4),
+	DSI_MODE_FLAG_DYN_CLK			= BIT(5),
 };
 
 /**
@@ -377,6 +392,7 @@ struct dsi_panel_cmd_set {
  * @clk_rate_hz:      DSI bit clock rate per lane in Hz.
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                    panels in microseconds.
+ * @overlap_pixels:   overlap pixels for certain panels.
  * @dsc_enabled:      DSC compression enabled.
  * @dsc:              DSC compression configuration.
  * @roi_caps:         Panel ROI capabilities.
@@ -398,6 +414,7 @@ struct dsi_mode_info {
 	u32 refresh_rate;
 	u64 clk_rate_hz;
 	u32 mdp_transfer_time_us;
+	u32 overlap_pixels;
 	bool dsc_enabled;
 	struct msm_display_dsc_info *dsc;
 	struct msm_roi_caps roi_caps;
@@ -438,7 +455,9 @@ struct dsi_split_link_config {
  * @ignore_rx_eot:       Ignore Rx EOT packets if set to true.
  * @append_tx_eot:       Append EOT packets for forward transmissions if set to
  *                       true.
- * @ext_bridge_mode:     External bridge is connected.
+ * @ext_bridge_num:      Connected external bridge count.
+ * @ext_bridge_map:      External bridge config reg needs to match with the port
+ *                       reg config.
  * @force_hs_clk_lane:   Send continuous clock to the panel.
  * @dsi_split_link_config:  Split Link Configuration.
  */
@@ -459,7 +478,8 @@ struct dsi_host_common_cfg {
 	u32 t_clk_pre;
 	bool ignore_rx_eot;
 	bool append_tx_eot;
-	bool ext_bridge_mode;
+	u32 ext_bridge_num;
+	u32 ext_bridge_map[MAX_DSI_CTRLS_PER_DISPLAY];
 	bool force_hs_clk_lane;
 	struct dsi_split_link_config split_link;
 };
@@ -548,6 +568,7 @@ struct dsi_host_config {
  * @mdp_transfer_time_us:   Specifies the mdp transfer time for command mode
  *                          panels in microseconds.
  * @clk_rate_hz:          DSI bit clock per lane in hz.
+ * @overlap_pixels:       overlap pixels for certain panels.
  * @topology:             Topology selected for the panel
  * @dsc:                  DSC compression info
  * @dsc_enabled:          DSC compression enabled
@@ -564,6 +585,7 @@ struct dsi_display_mode_priv_info {
 	u32 panel_prefill_lines;
 	u32 mdp_transfer_time_us;
 	u64 clk_rate_hz;
+	u32 overlap_pixels;
 
 	struct msm_display_topology topology;
 	struct msm_display_dsc_info dsc;
@@ -635,12 +657,50 @@ struct dsi_event_cb_info {
  * @DSI_FIFO_OVERFLOW:     DSI FIFO Overflow error
  * @DSI_FIFO_UNDERFLOW:    DSI FIFO Underflow error
  * @DSI_LP_Rx_TIMEOUT:     DSI LP/RX Timeout error
+ * @DSI_PLL_UNLOCK_ERR:	   DSI PLL unlock error
  */
 enum dsi_error_status {
 	DSI_FIFO_OVERFLOW = 1,
 	DSI_FIFO_UNDERFLOW,
 	DSI_LP_Rx_TIMEOUT,
+	DSI_PLL_UNLOCK_ERR,
 	DSI_ERR_INTR_ALL,
 };
 
+/* structure containing the delays required for dynamic clk */
+struct dsi_dyn_clk_delay {
+	u32 pipe_delay;
+	u32 pipe_delay2;
+	u32 pll_delay;
+};
+
+/* dynamic refresh control bits */
+enum dsi_dyn_clk_control_bits {
+	DYN_REFRESH_INTF_SEL = 1,
+	DYN_REFRESH_SYNC_MODE,
+	DYN_REFRESH_SW_TRIGGER,
+	DYN_REFRESH_SWI_CTRL,
+};
+
+/* convert dsi pixel format into bits per pixel */
+static inline int dsi_pixel_format_to_bpp(enum dsi_pixel_format fmt)
+{
+	switch (fmt) {
+	case DSI_PIXEL_FORMAT_RGB888:
+	case DSI_PIXEL_FORMAT_MAX:
+		return 24;
+	case DSI_PIXEL_FORMAT_RGB666:
+	case DSI_PIXEL_FORMAT_RGB666_LOOSE:
+		return 18;
+	case DSI_PIXEL_FORMAT_RGB565:
+		return 16;
+	case DSI_PIXEL_FORMAT_RGB111:
+		return 3;
+	case DSI_PIXEL_FORMAT_RGB332:
+		return 8;
+	case DSI_PIXEL_FORMAT_RGB444:
+		return 12;
+	}
+	return 24;
+}
 #endif /* _DSI_DEFS_H_ */

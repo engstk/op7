@@ -17,7 +17,8 @@ Charger specific properties:
 - compatible
   Usage:      required
   Value type: <string>
-  Definition: "qcom,smb1390-charger-psy".
+  Definition: "qcom,smb1390-charger-psy" for master SMB1390 and
+	      "qcom,smb1390-slave" for slave SMB1390.
 
 - qcom,pmic-revid
   Usage:      required
@@ -31,6 +32,37 @@ Charger specific properties:
   Value type: <phandle>
   Definition: For details about IIO bindings see:
 	      Documentation/devicetree/bindings/iio/iio-bindings.txt
+
+- qcom,min-ilim-ua
+  Usage:      optional
+  Value type: <u32>
+  Definition: Minimum ILIM supported, if requested ILIM goes below this value
+	      disable SMB1390. If this values is not specified default minimum
+	      ILIM is 1A.
+
+- qcom,max-temp-alarm-degc
+  Usage:      optional
+  Value type: <u32>
+  Definition: Maximum die temperature to trigger temp alarm. The value
+	      must be one of the following:
+	      85, 95, 110, 125.
+	      If this value is not specified or is not one of the above
+	      then default value is 110.
+
+- qcom,max-cutoff-soc
+  Usage:      optional
+  Value type: <u32>
+  Definition: SOC beyond which SMB1390 is kept disabled.
+	      If this value is not specified then default value is 85%.
+
+- qcom,parallel-output-mode
+  Usage:      optional
+  Value type: <u32>
+  Definition: Defines the SMB1390 output connection topology.
+		This should be one of the following:
+		0 - If SMB1390 output is conencted to VPH_PWR node.
+		1 - If SMB1390 output is connected to VBAT.
+		If this value is not specified then default value is 0.
 
 ================================================
 Second Level Nodes - SMB1390 Charger Peripherals

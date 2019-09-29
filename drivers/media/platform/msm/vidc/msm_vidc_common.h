@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -232,6 +232,11 @@ bool msm_comm_compare_device_plane(struct msm_vidc_buffer *mbuf,
 		u32 type, u32 *planes, u32 i);
 bool msm_comm_compare_device_planes(struct msm_vidc_buffer *mbuf,
 		u32 type, u32 *planes);
+void msm_comm_store_tags(struct msm_vidc_inst *inst,
+		struct vidc_tag_data *tag_data);
+void msm_comm_fetch_tags(struct msm_vidc_inst *inst,
+		struct vidc_tag_data *tag_data);
+void msm_comm_free_buffer_tags(struct msm_vidc_inst *inst);
 int msm_comm_qbuf_cache_operations(struct msm_vidc_inst *inst,
 		struct msm_vidc_buffer *mbuf);
 int msm_comm_dqbuf_cache_operations(struct msm_vidc_inst *inst,
@@ -244,12 +249,20 @@ void print_v4l2_buffer(u32 tag, const char *str, struct msm_vidc_inst *inst,
 		struct v4l2_buffer *v4l2);
 void kref_put_mbuf(struct msm_vidc_buffer *mbuf);
 bool kref_get_mbuf(struct msm_vidc_inst *inst, struct msm_vidc_buffer *mbuf);
+void msm_comm_store_filled_length(struct msm_vidc_list *data_list,
+		u32 index, u32 filled_length);
+void msm_comm_fetch_filled_length(struct msm_vidc_list *data_list,
+		u32 index, u32 *filled_length);
 void msm_comm_store_mark_data(struct msm_vidc_list *data_list,
 		u32 index, u32 mark_data, u32 mark_target);
 void msm_comm_fetch_mark_data(struct msm_vidc_list *data_list,
 		u32 index, u32 *mark_data, u32 *mark_target);
 int msm_comm_release_mark_data(struct msm_vidc_inst *inst);
+int msm_comm_qbufs_batch(struct msm_vidc_inst *inst,
+		struct msm_vidc_buffer *mbuf);
 int msm_comm_qbuf_decode_batch(struct msm_vidc_inst *inst,
 		struct msm_vidc_buffer *mbuf);
 int msm_comm_num_queued_bufs(struct msm_vidc_inst *inst, u32 type);
+bool msm_comm_check_for_inst_overload(struct msm_vidc_core *core);
+void msm_vidc_batch_handler(struct work_struct *work);
 #endif

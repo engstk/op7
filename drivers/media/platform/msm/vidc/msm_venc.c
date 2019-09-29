@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -155,6 +155,12 @@ static const char *const mpeg_video_stream_format[] = {
 	"NAL Format Two Byte Length",
 	"NAL Format Four Byte Length",
 	NULL
+};
+
+static const char *const roi_map_type[] = {
+	"None",
+	"2-bit",
+	"2-byte"
 };
 
 static struct msm_vidc_ctrl msm_venc_ctrls[] = {
@@ -677,11 +683,12 @@ static struct msm_vidc_ctrl msm_venc_ctrls[] = {
 		.name = "Extradata Type",
 		.type = V4L2_CTRL_TYPE_MENU,
 		.minimum = V4L2_MPEG_VIDC_EXTRADATA_NONE,
-		.maximum = V4L2_MPEG_VIDC_EXTRADATA_UBWC_CR_STATS_INFO,
+		.maximum = V4L2_MPEG_VIDC_EXTRADATA_ENC_FRAME_QP,
 		.default_value = V4L2_MPEG_VIDC_EXTRADATA_NONE,
 		.menu_skip_mask = ~(
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_NONE) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_INTERLACE_VIDEO) |
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_ENC_DTS) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_TIMESTAMP) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_S3D_FRAME_PACKING) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_FRAME_RATE) |
@@ -691,7 +698,9 @@ static struct msm_vidc_ctrl msm_venc_ctrls[] = {
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_ASPECT_RATIO) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_LTR) |
 			(1 << V4L2_MPEG_VIDC_EXTRADATA_ROI_QP) |
-			(1 << V4L2_MPEG_VIDC_EXTRADATA_HDR10PLUS_METADATA)
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_HDR10PLUS_METADATA) |
+			(1 << V4L2_MPEG_VIDC_EXTRADATA_INPUT_CROP) |
+			(1ULL << V4L2_MPEG_VIDC_EXTRADATA_ENC_FRAME_QP)
 			),
 		.qmenu = mpeg_video_vidc_extradata,
 	},
@@ -1161,6 +1170,20 @@ static struct msm_vidc_ctrl msm_venc_ctrls[] = {
 		.maximum = V4L2_MPEG_MSM_VIDC_ENABLE,
 		.default_value = V4L2_MPEG_MSM_VIDC_ENABLE,
 		.step = 1,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE,
+		.name = "ROI Type",
+		.type = V4L2_CTRL_TYPE_MENU,
+		.minimum = V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_NONE,
+		.maximum = V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_2BYTE,
+		.default_value = V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_NONE,
+		.menu_skip_mask = ~(
+		(1 << V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_NONE) |
+		(1 << V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_2BIT) |
+		(1 << V4L2_CID_MPEG_VIDC_VIDEO_ROI_TYPE_2BYTE)
+		),
+		.qmenu = roi_map_type,
 	},
 };
 
@@ -1805,9 +1828,12 @@ int msm_venc_s_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 		case V4L2_MPEG_VIDC_EXTRADATA_ASPECT_RATIO:
 		case V4L2_MPEG_VIDC_EXTRADATA_ROI_QP:
 		case V4L2_MPEG_VIDC_EXTRADATA_HDR10PLUS_METADATA:
+		case V4L2_MPEG_VIDC_EXTRADATA_INPUT_CROP:
 			inst->bufq[OUTPUT_PORT].num_planes = 2;
 			break;
 		case V4L2_MPEG_VIDC_EXTRADATA_LTR:
+		case V4L2_MPEG_VIDC_EXTRADATA_ENC_FRAME_QP:
+		case V4L2_MPEG_VIDC_EXTRADATA_ENC_DTS:
 			inst->bufq[CAPTURE_PORT].num_planes = 2;
 			break;
 		default:

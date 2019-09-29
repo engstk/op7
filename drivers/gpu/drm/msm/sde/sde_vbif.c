@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,6 +17,7 @@
 #include "sde_vbif.h"
 #include "sde_hw_vbif.h"
 #include "sde_trace.h"
+#include "sde_rotator_vbif.h"
 
 #define MAX_XIN_CLIENT	16
 
@@ -294,6 +295,41 @@ exit:
 	return;
 }
 
+void mdp_vbif_lock(struct platform_device *parent_pdev, bool enable)
+{
+	struct drm_device *ddev;
+	struct sde_kms *sde_kms;
+	struct sde_hw_vbif *vbif = NULL;
+	int i;
+
+	ddev = platform_get_drvdata(parent_pdev);
+	if (!ddev || !ddev_to_msm_kms(ddev)) {
+		SDE_ERROR("invalid drm device\n");
+		return;
+	}
+
+	sde_kms = to_sde_kms(ddev_to_msm_kms(ddev));
+
+	for (i = 0; i < ARRAY_SIZE(sde_kms->hw_vbif); i++) {
+		if (sde_kms->hw_vbif[i] &&
+				sde_kms->hw_vbif[i]->idx == VBIF_RT) {
+			vbif = sde_kms->hw_vbif[i];
+			break;
+		}
+	}
+
+	if (!vbif) {
+		SDE_DEBUG("invalid vbif structure\n");
+		return;
+	}
+
+	if (enable)
+		mutex_lock(&vbif->mutex);
+	else
+		mutex_unlock(&vbif->mutex);
+
+}
+
 bool sde_vbif_set_xin_halt(struct sde_kms *sde_kms,
 		struct sde_vbif_set_xin_halt_params *params)
 {
@@ -397,8 +433,12 @@ void sde_vbif_set_qos_remap(struct sde_kms *sde_kms,
 		return;
 	}
 
-	qos_tbl = params->is_rt ? &vbif->cap->qos_rt_tbl :
-			&vbif->cap->qos_nrt_tbl;
+	if (params->client_type > VBIF_MAX_CLIENT) {
+		SDE_ERROR("invalid client type:%d\n", params->client_type);
+		return;
+	}
+
+	qos_tbl = &vbif->cap->qos_tbl[params->client_type];
 
 	if (!qos_tbl->npriority_lvl || !qos_tbl->priority_lvl) {
 		SDE_DEBUG("qos tbl not defined\n");

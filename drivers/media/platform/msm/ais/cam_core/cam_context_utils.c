@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -262,8 +262,73 @@ int32_t cam_context_release_dev_to_hw(struct cam_context *ctx,
 	ctx->session_hdl = -1;
 	ctx->dev_hdl = -1;
 	ctx->link_hdl = -1;
+	ctx->last_flush_req = 0;
 
 	return 0;
+}
+
+int32_t cam_context_config_dev_to_hw(
+	struct cam_context *ctx, struct cam_config_dev_cmd *cmd)
+{
+	int rc = 0;
+	size_t len;
+	struct cam_hw_stream_setttings cfg;
+	uintptr_t packet_addr;
+	struct cam_packet *packet;
+
+	if (!ctx || !cmd) {
+		CAM_ERR(CAM_CTXT, "Invalid input params %pK %pK", ctx, cmd);
+		return -EINVAL;
+	}
+
+	if (!ctx->hw_mgr_intf->hw_config_stream_settings) {
+		CAM_ERR(CAM_CTXT, "[%s][%d] HW interface is not ready",
+			ctx->dev_name, ctx->ctx_id);
+		rc = -EFAULT;
+		return rc;
+	}
+
+	rc = cam_context_validate_thread();
+	if (rc) {
+		CAM_ERR(CAM_CTXT,
+			"Not executing in the right context");
+		return rc;
+	}
+
+	rc = cam_mem_get_cpu_buf((int32_t) cmd->packet_handle,
+		&packet_addr, &len);
+	if (rc) {
+		CAM_ERR(CAM_CTXT, "[%s][%d] Can not get packet address",
+			ctx->dev_name, ctx->ctx_id);
+		rc = -EINVAL;
+		return rc;
+	}
+
+	if ((len < sizeof(struct cam_packet)) ||
+		(cmd->offset >= (len - sizeof(struct cam_packet)))) {
+		CAM_ERR(CAM_CTXT, "Not enough buf");
+		return -EINVAL;
+
+	}
+	packet = (struct cam_packet *) ((uint8_t *)packet_addr +
+		(uint32_t)cmd->offset);
+
+	memset(&cfg, 0, sizeof(cfg));
+	cfg.packet = packet;
+	cfg.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
+	cfg.priv = NULL;
+
+	CAM_DBG(CAM_CTXT, "Processing config settings");
+	rc = ctx->hw_mgr_intf->hw_config_stream_settings(
+		ctx->hw_mgr_intf->hw_mgr_priv, &cfg);
+	if (rc) {
+		CAM_ERR(CAM_CTXT,
+			"[%s][%d] Config failed stream settings",
+			ctx->dev_name, ctx->ctx_id);
+		rc = -EFAULT;
+	}
+
+	return rc;
 }
 
 int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
@@ -272,22 +337,21 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	int rc = 0;
 	struct cam_ctx_request *req = NULL;
 	struct cam_hw_prepare_update_args cfg;
-	uint64_t packet_addr;
+	uintptr_t packet_addr;
 	struct cam_packet *packet;
 	size_t len = 0;
+	size_t remain_len = 0;
 	int32_t i = 0, j = 0;
 
 	if (!ctx || !cmd) {
 		CAM_ERR(CAM_CTXT, "Invalid input params %pK %pK", ctx, cmd);
-		rc = -EINVAL;
-		goto end;
+		return -EINVAL;
 	}
 
 	if (!ctx->hw_mgr_intf) {
 		CAM_ERR(CAM_CTXT, "[%s][%d] HW interface is not ready",
 			ctx->dev_name, ctx->ctx_id);
-		rc = -EFAULT;
-		goto end;
+		return -EFAULT;
 	}
 	rc = cam_context_validate_thread();
 	if (rc)
@@ -304,8 +368,7 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	if (!req) {
 		CAM_ERR(CAM_CTXT, "[%s][%d] No more request obj free",
 			ctx->dev_name, ctx->ctx_id);
-		rc = -ENOMEM;
-		goto end;
+		return -ENOMEM;
 	}
 
 	memset(req, 0, sizeof(*req));
@@ -315,8 +378,7 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 	/* for config dev, only memory handle is supported */
 	/* map packet from the memhandle */
 	rc = cam_mem_get_cpu_buf((int32_t) cmd->packet_handle,
-		(uint64_t *) &packet_addr,
-		&len);
+		&packet_addr, &len);
 	if (rc != 0) {
 		CAM_ERR(CAM_CTXT, "[%s][%d] Can not get packet address",
 			ctx->dev_name, ctx->ctx_id);
@@ -324,11 +386,33 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 		goto free_req;
 	}
 
-	packet = (struct cam_packet *) (packet_addr + cmd->offset);
+	remain_len = len;
+	if ((len < sizeof(struct cam_packet)) ||
+		((size_t)cmd->offset >= len - sizeof(struct cam_packet))) {
+		CAM_ERR(CAM_CTXT, "invalid buff length: %zu or offset", len);
+		rc = -EINVAL;
+		goto free_cpu_buf;
+	}
+
+	remain_len -= (size_t)cmd->offset;
+	packet = (struct cam_packet *) ((uint8_t *)packet_addr +
+		(uint32_t)cmd->offset);
+
+	if (packet->header.request_id <= ctx->last_flush_req) {
+		CAM_ERR(CAM_CORE,
+			"request %lld has been flushed, reject packet",
+			packet->header.request_id);
+		rc = -EINVAL;
+		goto free_cpu_buf;
+	}
+
+	if (packet->header.request_id > ctx->last_flush_req)
+		ctx->last_flush_req = 0;
 
 	/* preprocess the configuration */
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.packet = packet;
+	cfg.remain_len = remain_len;
 	cfg.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
 	cfg.max_hw_update_entries = CAM_CTX_CFG_MAX;
 	cfg.num_hw_update_entries = req->num_hw_update_entries;
@@ -346,7 +430,7 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 			"[%s][%d] Prepare config packet failed in HW layer",
 			ctx->dev_name, ctx->ctx_id);
 		rc = -EFAULT;
-		goto free_req;
+		goto free_cpu_buf;
 	}
 	req->num_hw_update_entries = cfg.num_hw_update_entries;
 	req->num_out_map_entries = cfg.num_out_map_entries;
@@ -396,31 +480,37 @@ int32_t cam_context_prepare_dev_to_hw(struct cam_context *ctx,
 						ctx->dev_name, ctx->ctx_id,
 						req->request_id);
 
-				cam_context_putref(ctx);
-
-				goto put_ref;
+				goto put_ctx_ref;
 			}
 			CAM_DBG(CAM_CTXT, "register in fence cb: %d ret = %d",
 				req->in_map_entries[j].sync_id, rc);
 		}
-		goto end;
 	}
 
-	return rc;
+	if (cam_mem_put_cpu_buf((int32_t) cmd->packet_handle))
+		CAM_WARN(CAM_CTXT, "[%s][%d] Can not put packet address",
+			ctx->dev_name, ctx->ctx_id);
 
+	return rc;
+put_ctx_ref:
+	for (j; j >= 0; j--)
+		cam_context_putref(ctx);
 put_ref:
 	for (--i; i >= 0; i--) {
-		rc = cam_sync_put_obj_ref(req->out_map_entries[i].sync_id);
-		if (rc)
+		if (cam_sync_put_obj_ref(req->out_map_entries[i].sync_id))
 			CAM_ERR(CAM_CTXT, "Failed to put ref of fence %d",
 				req->out_map_entries[i].sync_id);
 	}
+free_cpu_buf:
+	if (cam_mem_put_cpu_buf((int32_t) cmd->packet_handle))
+		CAM_WARN(CAM_CTXT, "[%s][%d] Can not put packet address",
+			ctx->dev_name, ctx->ctx_id);
 free_req:
 	spin_lock(&ctx->lock);
 	list_add_tail(&req->list, &ctx->free_req_list);
 	req->ctx = NULL;
 	spin_unlock(&ctx->lock);
-end:
+
 	return rc;
 }
 
@@ -811,9 +901,10 @@ int32_t cam_context_flush_dev_to_hw(struct cam_context *ctx,
 		goto end;
 	}
 
-	if (cmd->flush_type == CAM_FLUSH_TYPE_ALL)
+	if (cmd->flush_type == CAM_FLUSH_TYPE_ALL) {
+		ctx->last_flush_req = cmd->req_id;
 		rc = cam_context_flush_ctx_to_hw(ctx);
-	else if (cmd->flush_type == CAM_FLUSH_TYPE_REQ)
+	} else if (cmd->flush_type == CAM_FLUSH_TYPE_REQ)
 		rc = cam_context_flush_req_to_hw(ctx, cmd);
 	else {
 		rc = -EINVAL;
@@ -931,6 +1022,7 @@ int32_t cam_context_dump_pf_info_to_hw(struct cam_context *ctx,
 		cmd_args.ctxt_to_hw_map = ctx->ctxt_to_hw_map;
 		cmd_args.cmd_type = CAM_HW_MGR_CMD_DUMP_PF_INFO;
 		cmd_args.u.pf_args.pf_data.packet = packet;
+		cmd_args.u.pf_args.pf_data.ctx_id = ctx->ctx_id;
 		cmd_args.u.pf_args.iova = iova;
 		cmd_args.u.pf_args.buf_info = buf_info;
 		cmd_args.u.pf_args.mem_found = mem_found;

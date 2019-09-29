@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -217,12 +217,28 @@ static struct clk_fixed_factor crc_div_pll1_out_aux2 = {
 
 static const struct freq_tbl ftbl_gpu_cc_gx_gfx3d_clk_src[] = {
 	F(290000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
+	F(350000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
 	F(435000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
+	F(500000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	F(550000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(650000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	F(700000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	F(745000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	F(845000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	F(895000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	{ }
+};
+
+static const struct freq_tbl ftbl_gpu_cc_gx_gfx3d_clk_src_sa6155[] = {
+	F(290000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
+	F(350000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
+	F(435000000, P_CRC_DIV_PLL1_OUT_AUX2, 1, 0, 0),
+	F(500000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(550000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(650000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(700000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(745000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
+	F(845000000, P_CRC_DIV_PLL0_OUT_AUX2, 1, 0, 0),
 	{ }
 };
 
@@ -280,14 +296,14 @@ static struct clk_branch gpu_cc_cx_apb_clk = {
 
 static struct clk_branch gpu_cc_cx_gfx3d_clk = {
 	.halt_reg = 0x10a4,
-	.halt_check = BRANCH_HALT,
+	.halt_check = BRANCH_HALT_DELAY,
 	.clkr = {
 		.enable_reg = 0x10a4,
 		.enable_mask = BIT(0),
 		.hw.init = &(struct clk_init_data){
 			.name = "gpu_cc_cx_gfx3d_clk",
 			.parent_names = (const char *[]){
-				"gpu_cc_gx_gfx3d_clk_src",
+				"gpu_cc_gx_gfx3d_clk",
 			},
 			.num_parents = 1,
 			.flags = CLK_SET_RATE_PARENT,
@@ -434,6 +450,19 @@ static struct clk_branch gpu_cc_ahb_clk = {
 	},
 };
 
+static struct clk_branch gpu_cc_hlos1_vote_gpu_smmu_clk = {
+	.halt_reg = 0x5000,
+	.halt_check = BRANCH_VOTED,
+	.clkr = {
+		.enable_reg = 0x5000,
+		.enable_mask = BIT(0),
+		.hw.init = &(struct clk_init_data){
+			.name = "gpu_cc_hlos1_vote_gpu_smmu_clk",
+			.ops = &clk_branch2_ops,
+		},
+	},
+};
+
 struct clk_hw *gpu_cc_sm6150_hws[] = {
 	[CRC_DIV_PLL0_OUT_AUX2] = &crc_div_pll0_out_aux2.hw,
 	[CRC_DIV_PLL1_OUT_AUX2] = &crc_div_pll1_out_aux2.hw,
@@ -456,6 +485,7 @@ static struct clk_regmap *gpu_cc_sm6150_clocks[] = {
 	[GPU_CC_GX_GFX3D_CLK] = &gpu_cc_gx_gfx3d_clk.clkr,
 	[GPU_CC_GX_GFX3D_CLK_SRC] = &gpu_cc_gx_gfx3d_clk_src.clkr,
 	[GPU_CC_AHB_CLK] = &gpu_cc_ahb_clk.clkr,
+	[GPU_CC_HLOS1_VOTE_GPU_SMMU_CLK] = &gpu_cc_hlos1_vote_gpu_smmu_clk.clkr,
 };
 
 static const struct regmap_config gpu_cc_sm6150_regmap_config = {
@@ -476,15 +506,27 @@ static const struct qcom_cc_desc gpu_cc_sm6150_desc = {
 
 static const struct of_device_id gpu_cc_sm6150_match_table[] = {
 	{ .compatible = "qcom,gpucc-sm6150" },
+	{ .compatible = "qcom,gpucc-sa6155" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, gpu_cc_sm6150_match_table);
+
+static void gpucc_sm6150_fixup_sa6155(struct platform_device *pdev)
+{
+	vdd_cx.num_levels = VDD_NUM_SA6155;
+	vdd_cx.cur_level = VDD_NUM_SA6155;
+	vdd_mx.num_levels = VDD_MX_NUM_SA6155;
+	vdd_mx.cur_level = VDD_MX_NUM_SA6155;
+	gpu_cc_gx_gfx3d_clk_src.clkr.hw.init->rate_max[VDD_HIGH_L1] = 0;
+	gpu_cc_gx_gfx3d_clk_src.freq_tbl = ftbl_gpu_cc_gx_gfx3d_clk_src_sa6155;
+}
 
 static int gpu_cc_sm6150_probe(struct platform_device *pdev)
 {
 	struct regmap *regmap;
 	int ret;
 	unsigned int value, mask;
+	int is_sa6155;
 
 	/* Get CX voltage regulator for CX and GMU clocks. */
 	vdd_cx.regulator[0] = devm_regulator_get(&pdev->dev, "vdd_cx");
@@ -503,6 +545,11 @@ static int gpu_cc_sm6150_probe(struct platform_device *pdev)
 				"Unable to get vdd_mx regulator\n");
 		return PTR_ERR(vdd_mx.regulator[0]);
 	}
+
+	is_sa6155 = of_device_is_compatible(pdev->dev.of_node,
+						"qcom,gpucc-sa6155");
+	if (is_sa6155)
+		gpucc_sm6150_fixup_sa6155(pdev);
 
 	regmap = qcom_cc_map(pdev, &gpu_cc_sm6150_desc);
 	if (IS_ERR(regmap)) {

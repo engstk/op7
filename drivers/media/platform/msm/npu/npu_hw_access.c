@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,8 +33,7 @@ uint32_t npu_core_reg_read(struct npu_device *npu_dev, uint32_t off)
 {
 	uint32_t ret = 0;
 
-	ret = readl_relaxed(npu_dev->core_io.base + off);
-	__iormb();
+	ret = readl(npu_dev->core_io.base + off);
 	return ret;
 }
 
@@ -48,8 +47,7 @@ uint32_t npu_bwmon_reg_read(struct npu_device *npu_dev, uint32_t off)
 {
 	uint32_t ret = 0;
 
-	ret = readl_relaxed(npu_dev->bwmon_io.base + off);
-	__iormb();
+	ret = readl(npu_dev->bwmon_io.base + off);
 	return ret;
 }
 
@@ -64,10 +62,8 @@ uint32_t npu_qfprom_reg_read(struct npu_device *npu_dev, uint32_t off)
 {
 	uint32_t ret = 0;
 
-	if (npu_dev->qfprom_io.base) {
-		ret = readl_relaxed(npu_dev->qfprom_io.base + off);
-		__iormb();
-	}
+	if (npu_dev->qfprom_io.base)
+		ret = readl(npu_dev->qfprom_io.base + off);
 
 	return ret;
 }
@@ -201,7 +197,7 @@ static struct npu_ion_buf *npu_alloc_npu_ion_buffer(struct npu_client
 
 	if (ret_val) {
 		/* mapped already, treat as invalid request */
-		pr_err("ion buf %x has been mapped\n");
+		pr_err("ion buf has been mapped\n");
 		ret_val = NULL;
 	} else {
 		ret_val = kzalloc(sizeof(*ret_val), GFP_KERNEL);
@@ -302,8 +298,6 @@ int npu_mem_map(struct npu_client *client, int buf_hdl, uint32_t size,
 		goto map_end;
 	}
 
-	dma_sync_sg_for_device(&(npu_dev->pdev->dev), ion_buf->table->sgl,
-		ion_buf->table->nents, DMA_BIDIRECTIONAL);
 	ion_buf->iova = ion_buf->table->sgl->dma_address;
 	ion_buf->size = ion_buf->dma_buf->size;
 	*addr = ion_buf->iova;
@@ -361,7 +355,7 @@ void npu_mem_unmap(struct npu_client *client, int buf_hdl,  uint64_t addr)
 	}
 
 	if (ion_buf->iova != addr)
-		pr_warn("unmap address %lu doesn't match %lu\n", addr,
+		pr_warn("unmap address %llu doesn't match %llu\n", addr,
 			ion_buf->iova);
 
 	if (ion_buf->table)
@@ -376,25 +370,6 @@ void npu_mem_unmap(struct npu_client *client, int buf_hdl,  uint64_t addr)
 	pr_debug("unmapped mem addr:0x%llx size:0x%x\n", ion_buf->iova,
 		ion_buf->size);
 	npu_free_npu_ion_buffer(client, buf_hdl);
-}
-
-/* -------------------------------------------------------------------------
- * Functions - Work Queue
- * -------------------------------------------------------------------------
- */
-void npu_destroy_wq(struct workqueue_struct *wq)
-{
-	destroy_workqueue(wq);
-}
-
-struct workqueue_struct *npu_create_wq(struct npu_host_ctx *host_ctx,
-	const char *name, wq_hdlr_fn hdlr, struct work_struct *irq_work)
-{
-	struct workqueue_struct *wq = create_workqueue(name);
-
-	INIT_WORK(irq_work, hdlr);
-
-	return wq;
 }
 
 /* -------------------------------------------------------------------------

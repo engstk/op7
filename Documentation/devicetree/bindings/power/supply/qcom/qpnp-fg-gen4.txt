@@ -29,6 +29,27 @@ First Level Node - FG Gen4 device
 	Definition: Should specify the phandle of PMIC revid module. This is
 		    used to identify the PMIC subtype.
 
+- qcom,pmic-pbs
+	Usage:      optional
+	Value type: <phandle>
+	Definition: Should specify the phandle of PMIC PBS module. This is
+		    used to trigger PBS for certain configurations.
+
+- #thermal-sensor-cells: Should be 0. See thermal.txt for the description.
+
+- nvmem-names:
+	Usage: optional
+	Value type: <string>
+	Definition: Nvmem device name for SDAM to store parameters like cycle
+		    counters and learned capacity. It must be defined as
+		    "fg_sdam".
+
+- nvmem:
+	Usage: optional
+	Value type: <phandle>
+	Definition: Phandle of the nvmem device name to access SDAM to store
+		    parameters.
+
 - qcom,fg-cutoff-voltage
 	Usage:      optional
 	Value type: <u32>
@@ -49,6 +70,15 @@ First Level Node - FG Gen4 device
 		    will read 0% soc and immediately shutdown. If this property
 		    is not specified, then the default value used will be
 		    2812 mV.
+
+- qcom,fg-sys-min-voltage
+	Usage:      optional
+	Value type: <u32>
+	Definition: The voltage threshold (in mV) which describes the system
+		    minimum voltage as per the hardware recommendation. This
+		    is not used for any configuration but only for calculating
+		    the available power. If this property is not specified,
+		    then the default value used is 2800 mV.
 
 - qcom,fg-sys-term-current
 	Usage:      optional
@@ -72,8 +102,9 @@ First Level Node - FG Gen4 device
 	Value type: <u32>
 	Definition: Percentage of SOC increase upon which the delta monotonic &
 		    battery SOC interrupts will be triggered. If this property
-		    is not specified, then the default value will be 1.
-		    Possible values are in the range of 0 to 12.
+		    is not specified, then the default value will be 5 (0.5 %).
+		    Unit is in deci-percentage. Possible values are in the range
+		    of 1 to 124.
 
 - qcom,fg-esr-timer-chg-fast
 	Usage:      optional
@@ -151,6 +182,14 @@ First Level Node - FG Gen4 device
 		    This factor will be used when ESR correction delta is
 		    applied after the calculation. Default value is 2.
 
+- qcom,fg-esr-calib-dischg:
+	Usage:      optional
+	Value type: <empty>
+	Definition: Enables ESR calibration only during discharging. This
+		    should be specified only when ESR fast calibration is not
+		    required. Also, ESR discharging timers should be specified
+		    for the proper functionality.
+
 - qcom,fg-esr-pulse-thresh-ma
 	Usage:      optional
 	Value type: <u32>
@@ -188,6 +227,13 @@ First Level Node - FG Gen4 device
 	Value type: <u32>
 	Definition: Battery temperature hysteresis threshold. Possible values
 		    are: 0, 1, 2 and 3. Unit is in Kelvin or Celsius.
+
+- qcom,fg-batt-therm-freq
+	Usage:      optional
+	Value type: <u32>
+	Definition: Battery thermistor interval in seconds. Possible values
+		    are from 1-255. If not specified, then the default value
+		    configured is 8.
 
 - qcom,fg-force-load-profile
 	Usage:      optional
@@ -258,6 +304,12 @@ First Level Node - FG Gen4 device
 	Definition: A boolean property to enable weighted capacity learning
 		    based on change in battery SOC during a charging cycle.
 		    If this is specified "qcom,cl-start-capacity" is not used.
+
+- qcom,cl-skew
+	Usage:      optional
+	Value type: <u32>
+	Definition: Skew in decipercentage which when specified will be applied
+		    to the final learned capacity.
 
 - qcom,hold-soc-while-full
 	Usage:      optional
@@ -335,6 +387,12 @@ First Level Node - FG Gen4 device
 		    charging. Value has no unit. Allowed range is 62 to 15564
 		    in micro units.
 
+- qcom,ki-coeff-cutoff
+	Usage:      optional
+	Value type: <u32>
+	Definition: ki coefficient value for cutoff integration gain. Value has
+		    no unit. Allowed range is 62 to 15564 in micro units.
+
 - qcom,ki-coeff-full-dischg
 	Usage:      optional
 	Value type: <prop-encoded-array>
@@ -387,6 +445,51 @@ First Level Node - FG Gen4 device
 		    five pin battery is used. Based on this, time to full
 		    calculations would use the Rbatt calculated properly.
 
+- qcom,multi-profile-load
+	Usage:      optional
+	Value type: <empty>
+	Definition: A boolean property that when specified indicates that
+		    multiple profile loading needs to be enabled. This requires
+		    multiple battery profiles to be specified for a battery for
+		    proper functionality.
+
+- qcom,soc-hi-res
+	Usage:      optional
+	Value type: <empty>
+	Definition: A boolean property that when specified shows high
+		    resolution of monotonic SOC under CAPACITY_RAW property
+		    during charging in the scale of 0-10000.
+
+- qcom,soc-scale-mode-en
+	Usage:      optional
+	Value type: <boolean>
+	Definition: A boolean property that when specified will enable scaling
+		    of the SOC linearly, based on the filtered battery voltage
+		    after crossing below a Vbatt threshold.
+
+- qcom,soc-scale-vbatt-mv
+	Usage:      optional
+	Value type: <u32>
+	Definition: Threshold voltage to decide when SOC should
+		    be scaled based on filtered voltage when
+		    qcom,soc-scale-mode-en is specified. If this
+		    is not specified, then the default value is 3400.
+		    Unit is in mV.
+
+- qcom,soc-scale-time-ms
+	Usage:      optional
+	Value type: <u32>
+	Definition: Timer value for doing SOC calculation based on
+		    filtered voltage when qcom,soc-scale-mode-en is
+		    specified. If this is not specified, then the
+		    default value is 10000. Unit is in ms.
+
+- qcom,sw-esr-control
+	Usage:      optional
+	Value type: <empty>
+	Definition: A boolean property that when specified enables SW ESR
+		    control depending on input presence and user request.
+
 ==========================================================
 Second Level Nodes - Peripherals managed by FG Gen4 driver
 ==========================================================
@@ -415,6 +518,9 @@ pm8150b_fg: qpnp,fg {
 	#address-cells = <1>;
 	#size-cells = <1>;
 	qcom,pmic-revid = <&pm8150b_revid>;
+	nvmem-names = "fg_sdam";
+	nvmem = <&pm8150_sdam_2>;
+	#thermal-cells = <0>;
 	status = "okay";
 
 	qcom,fg-batt-soc@4000 {
@@ -478,4 +584,33 @@ pm8150b_fg: qpnp,fg {
 				  "dma-grant",
 	};
 
+};
+
+======================================
+Example for thermal zone configuration
+======================================
+
+thermal_zones {
+	pm8150b_fg {
+		polling-delay-passive = <200>;
+		polling-delay = <200>;
+		thermal-governor = "user_space";
+		thermal-sensors = <&pm8150b_fg>;
+
+		pm8150b_fg_trip1: pm8150b-fg-trip1 {
+			temperature = <40000>;
+			hysteresis = <0>;
+			type = "passive";
+		};
+		pm8150b_fg_trip2: pm8150b-fg-trip2 {
+			temperature = <45000>;
+			hysteresis = <0>;
+			type = "passive";
+		};
+		pm8150b_fg_trip3: pm8150b-fg-trip3 {
+			temperature = <55000>;
+			hysteresis = <0>;
+			type = "passive";
+		};
+	};
 };

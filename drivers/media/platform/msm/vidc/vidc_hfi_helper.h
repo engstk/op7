@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -204,6 +204,8 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_SYS_COMMON_START + 0x006)
 #define  HFI_PROPERTY_SYS_CONFIG_COVERAGE    \
 	(HFI_PROPERTY_SYS_COMMON_START + 0x007)
+#define  HFI_PROPERTY_SYS_UBWC_CONFIG    \
+	(HFI_PROPERTY_SYS_COMMON_START + 0x008)
 
 #define HFI_PROPERTY_PARAM_COMMON_START	\
 	(HFI_DOMAIN_BASE_COMMON + HFI_ARCH_COMMON_OFFSET + 0x1000)
@@ -265,6 +267,8 @@ struct hfi_buffer_info {
 	(HFI_PROPERTY_PARAM_VDEC_COMMON_START + 0x009)
 #define  HFI_PROPERTY_PARAM_VDEC_COLOUR_SPACE				\
 	(HFI_PROPERTY_PARAM_VDEC_COMMON_START + 0x00A)
+#define  HFI_PROPERTY_PARAM_VDEC_DPB_COUNTS				\
+	(HFI_PROPERTY_PARAM_VDEC_COMMON_START + 0x00B)
 
 
 #define HFI_PROPERTY_CONFIG_VDEC_COMMON_START				\
@@ -431,6 +435,8 @@ struct hfi_colour_space {
 #define HFI_CAPABILITY_MAX_VIDEOCORES			(HFI_COMMON_BASE + 0X2B)
 #define HFI_CAPABILITY_MAX_WORKMODES			(HFI_COMMON_BASE + 0X2C)
 #define HFI_CAPABILITY_UBWC_CR_STATS			(HFI_COMMON_BASE + 0X2D)
+#define HFI_CAPABILITY_ROTATION				(HFI_COMMON_BASE + 0X2F)
+#define HFI_CAPABILITY_COLOR_SPACE_CONVERSION		(HFI_COMMON_BASE + 0X30)
 #define HFI_CAPABILITY_MAX_WORKROUTES			(HFI_COMMON_BASE + 0X31)
 #define HFI_CAPABILITY_CQ_QUALITY_LEVEL			(HFI_COMMON_BASE + 0X32)
 
@@ -577,6 +583,12 @@ struct hfi_profile_level {
 	u32 level;
 };
 
+struct hfi_dpb_counts {
+	u32 max_dpb_count;
+	u32 max_ref_count;
+	u32 max_dec_buffering;
+};
+
 struct hfi_profile_level_supported {
 	u32 profile_count;
 	struct hfi_profile_level rg_profile_level[1];
@@ -658,7 +670,6 @@ struct hfi_bit_depth {
 };
 
 struct hfi_picture_type {
-	u32 is_sync_frame;
 	u32 picture_type;
 };
 
@@ -903,6 +914,11 @@ struct vidc_hal_session_cmd_pkt {
 	u32 size;
 	u32 packet_type;
 	u32 session_id;
+};
+
+struct hfi_packet_header {
+	u32 size;
+	u32 packet_type;
 };
 
 struct hfi_cmd_sys_init_packet {
