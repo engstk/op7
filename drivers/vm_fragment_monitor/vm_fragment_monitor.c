@@ -24,6 +24,7 @@
 #include <linux/cdev.h>
 #include <linux/device.h>
 #include <linux/kernel_stat.h>
+#include <linux/sched/mm.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 
@@ -41,10 +42,8 @@ static long monitor_fragment_ioctl(struct file *file, unsigned int cmd, unsigned
 	struct task_struct *task;
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
-	unsigned long vm_fragment_gap_max;
+	unsigned long vm_fragment_gap_max = 0;
 	void __user *parg = (void __user *)args;
-
-	pr_info("monitor_fragment_ioctl : pid = %lu\n", pid);
 
 	if (cmd != GET_GAP_SIZE)
 		return -EFAULT;
@@ -63,19 +62,25 @@ static long monitor_fragment_ioctl(struct file *file, unsigned int cmd, unsigned
 	get_task_struct(task);
 	rcu_read_unlock();
 
-	mm = task->mm;
+	mm = get_task_mm(task);
+	if (!mm) {
+		put_task_struct(task);
+		return -ENOMEM;
+	}
+
 	if (RB_EMPTY_ROOT(&mm->mm_rb))
 	{
+		mmput(mm);
 		put_task_struct(task);
 		return -ENOMEM;
 	}
 
 	vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
 	vm_fragment_gap_max = (vma->rb_subtree_gap >> 20);
-
-	pr_info("monitor_fragment_ioctl : vm_fragment_gap_max = %lu\n", vm_fragment_gap_max);
-
+	mmput(mm);
 	put_task_struct(task);
+
+	pr_info("monitor_fragment_ioctl : pid=%d, vm_fragment_gap_max=%d\n", (int)pid, (int)vm_fragment_gap_max);
 
 	if (copy_to_user(parg, &vm_fragment_gap_max, sizeof(unsigned long)))
 		return -EFAULT;
