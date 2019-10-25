@@ -38,7 +38,7 @@ static int gc_thread_func(void *data)
 				msecs_to_jiffies(wait_ms));
 
 		/* give it a try one time */
-		if (gc_th->gc_wake)
+		if (unlikely(gc_th->gc_wake))
 			gc_th->gc_wake = 0;
 
 		if (try_to_freeze()) {
