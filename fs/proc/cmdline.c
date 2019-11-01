@@ -44,7 +44,10 @@ static void patch_flag(char *cmd, const char *flag, const char *val)
 static void patch_safetynet_flags(char *cmd)
 {
 	patch_flag(cmd, "androidboot.flash.locked=", "1");
-	patch_flag(cmd, "androidboot.verifiedbootstate=", "green");
+	if (strstr(saved_command_line, "project_name=18857") ||
+		strstr(saved_command_line, "project_name=18821")) {
+		patch_flag(cmd, "androidboot.verifiedbootstate=", "green");
+	}
 	patch_flag(cmd, "androidboot.veritymode=", "enforcing");
 }
 
