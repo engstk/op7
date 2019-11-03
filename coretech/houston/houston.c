@@ -857,7 +857,7 @@ static void do_fps_boost(unsigned int val, unsigned int period_us)
 	struct task_struct *t;
 	u64 prev_ddr_target = 100;
 	u64 ddr_target = 100; /* default value */
-	struct cc_command cc;
+	//struct cc_command cc;
 
 	if (!fps_boost_enable)
 		return;
@@ -939,38 +939,38 @@ static void do_fps_boost(unsigned int val, unsigned int period_us)
 		do_cpufreq_boost_helper(CLUS_2_IDX, val, period_us, orig, cur);
 	}
 
-	/* boost ddrfreq */
-	if (ais_active) {
-		/* setup boost command */
-		cc.pid = current->pid;
-		cc.prio = CC_PRIO_HIGH;
-		cc.period_us = period_us;
-		cc.group = CC_CTL_GROUP_GRAPHIC;
-		cc.category = CC_CTL_CATEGORY_DDR_FREQ;
-		cc.response = 0;
-		cc.leader = current->tgid;
-		cc.bind_leader = true;
-		cc.status = 0;
-		cc.type = CC_CTL_TYPE_ONESHOT_NONBLOCK;
+	///* boost ddrfreq */
+	//if (ais_active) {
+	//	/* setup boost command */
+	//	cc.pid = current->pid;
+	//	cc.prio = CC_PRIO_HIGH;
+	//	cc.period_us = period_us;
+	//	cc.group = CC_CTL_GROUP_GRAPHIC;
+	//	cc.category = CC_CTL_CATEGORY_DDR_FREQ;
+	//	cc.response = 0;
+	//	cc.leader = current->tgid;
+	//	cc.bind_leader = true;
+	//	cc.status = 0;
+	//	cc.type = CC_CTL_TYPE_ONESHOT_NONBLOCK;
 
-		if (val > 0) {
-			clk_get_ddr_freq(&prev_ddr_target);
-			ddr_target = prev_ddr_target;
-			ddr_target /= 1000000;
-			ddr_target *= 2;
-			ddr_target = ddr_find_target(ddr_target);
-			prev_ddr_target = ddr_find_target(prev_ddr_target/1000000);
-			if (ddrfreq_hispeed_enable && ddrfreq_hispeed > ddr_target) {
-				ht_logv("boost ddr hispeed from %u to %u\n", ddr_target, ddrfreq_hispeed);
-				ddr_target = ddrfreq_hispeed;
-			}
-			cc.params[0] = ddr_target;
-			cc_tsk_process(&cc);
-		} else {
-			cc.type = CC_CTL_TYPE_RESET_NONBLOCK;
-			cc_tsk_process(&cc);
-		}
-	}
+	//	if (val > 0) {
+	//		clk_get_ddr_freq(&prev_ddr_target);
+	//		ddr_target = prev_ddr_target;
+	//		ddr_target /= 1000000;
+	//		ddr_target *= 2;
+	//		ddr_target = ddr_find_target(ddr_target);
+	//		prev_ddr_target = ddr_find_target(prev_ddr_target/1000000);
+	//		if (ddrfreq_hispeed_enable && ddrfreq_hispeed > ddr_target) {
+	//			ht_logv("boost ddr hispeed from %u to %u\n", ddr_target, ddrfreq_hispeed);
+	//			ddr_target = ddrfreq_hispeed;
+	//		}
+	//		cc.params[0] = ddr_target;
+	//		cc_tsk_process(&cc);
+	//	} else {
+	//		cc.type = CC_CTL_TYPE_RESET_NONBLOCK;
+	//		cc_tsk_process(&cc);
+	//	}
+	//}
 
 	if (val > 0) {
 		for (i = 0; i < HT_CLUSTERS; ++i) {
