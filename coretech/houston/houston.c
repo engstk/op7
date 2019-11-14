@@ -19,6 +19,7 @@
 #include <linux/cdev.h>
 #include <linux/workqueue.h>
 #include <linux/clk.h>
+#include <linux/jiffies.h>
 
 #ifdef CONFIG_AIGOV
 #include <linux/oem/aigov.h>
@@ -113,6 +114,9 @@ static struct list_head ht_rtg_head = LIST_HEAD_INIT(ht_rtg_head);
  */
 static struct list_head ht_rtg_perf_head = LIST_HEAD_INIT(ht_rtg_perf_head);
 
+/* report skin_temp to ais */
+static unsigned int thermal_update_period_hz = 100;
+module_param_named(thermal_update_period_hz, thermal_update_period_hz, uint, 0664);
 
 /*
  * filter mechanism
@@ -450,6 +454,29 @@ static void enable_cpu_counters(void* data)
 {
 	armv8pmu_pmcr_write(armv8pmu_pmcr_read() | ARMV8_PMCR_LC | ARMV8_PMCR_E | ARMV8_PMCR_C);
 	ht_logi("CPU:%d enable counter\n", smp_processor_id());
+}
+
+static unsigned int ht_get_temp_delay(int idx)
+{
+	static unsigned long next[HT_MONITOR_SIZE] = {0};
+	static unsigned int temps[HT_MONITOR_SIZE] = {0};
+
+	/* only allow for reading sensor data */
+	if (unlikely(idx < HT_CPU_0 || idx > HT_THERM_1))
+		return 0;
+
+	/* update */
+	if (jiffies > next[idx] && jiffies - next[idx] > thermal_update_period_hz) {
+		next[idx] = jiffies;
+		temps[idx] = ht_get_temp(idx);
+	}
+
+	if (jiffies < next[idx]) {
+		next[idx] = jiffies;
+		temps[idx] = ht_get_temp(idx);
+	}
+
+	return temps[idx];
 }
 
 /*
@@ -1306,6 +1333,7 @@ static void ht_collect_system_data(struct ai_parcel *p)
 	p->boost_cnt = atomic_read(&boost_cnt);
 	p->notify_start_ts_us = p->queued_ts_us;
 	p->notify_end_ts_us = ktime_to_us(ktime_get());
+	p->skin_temp = ht_get_temp_delay(HT_THERM_0);
 }
 
 static inline void ht_cpuload_helper(int clus, int cpus, struct cpuload_info *cli)
