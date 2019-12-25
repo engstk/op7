@@ -5297,6 +5297,7 @@ CONFIG_AW8697_HAPTIC=y
 #
 # LED Triggers
 #
+CONFIG_VM_FRAGMENT_MONITOR=y
 
 #
 # Firmware Drivers
