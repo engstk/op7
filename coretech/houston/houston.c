@@ -166,6 +166,15 @@ module_param_named(bat_update_period_us, bat_update_period_us, ulong, 0664);
 
 extern void bq27541_force_update_current(void);
 
+/* ioctl retry count */
+#define HT_IOCTL_RETRY_MAX 128
+static int ht_ioctl_retry_count = 0;
+module_param_named(ioctl_retry_count, ht_ioctl_retry_count, int, 0664);
+
+/* brain status */
+static bool ht_brain_active = true;
+module_param_named(brain_active, ht_brain_active, bool, 0664);
+
 /* fps boost switch */
 static bool fps_boost_enable = true;
 module_param_named(fps_boost_enable, fps_boost_enable, bool, 0664);
@@ -739,7 +748,8 @@ void ht_collect_perf_data(struct work_struct *work)
 	}
 
 	/* notify ai_scheduler that data collected */
-	wake_up(&ht_perf_waitq);
+	if (likely(ht_brain_active))
+		wake_up(&ht_perf_waitq);
 	put_task_struct(task);
 }
 
@@ -1377,6 +1387,8 @@ static long ht_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long __us
 		schedule();
 		finish_wait(&ht_perf_waitq, &wait);
 		ht_collect_system_data(&parcel);
+		ht_ioctl_retry_count = 0;
+		ht_brain_active = true;
 		if (copy_to_user((struct ai_parcel __user *) arg, &parcel, sizeof(parcel)))
 			return 0;
 		break;
@@ -1472,6 +1484,17 @@ static long ht_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long __us
 			return 0;
 		break;
 	}
+	default:
+		++ht_ioctl_retry_count;
+		if (ht_ioctl_retry_count >= HT_IOCTL_RETRY_MAX) {
+			DEFINE_WAIT(wait);
+			ht_logw("disable support from ai brain\n");
+			/* block ai observer here */
+			ht_brain_active = false;
+			prepare_to_wait(&ht_perf_waitq, &wait, TASK_INTERRUPTIBLE);
+			schedule();
+			finish_wait(&ht_perf_waitq, &wait);
+		}
 	}
 	return 0;
 }
