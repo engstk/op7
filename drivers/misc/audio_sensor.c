@@ -59,7 +59,7 @@ static ssize_t audio_write(struct file *file,
 	if (sscanf(kbuf, "%d", &state))
 		audio_data.state = state;
 
-	pr_info("%s: audio_data.state is %#x\n", __func__, audio_data.state);
+	pr_debug("%s: audio_data.state is %#x\n", __func__, audio_data.state);
 	atomic_set(&audio_data.read_ready, 1);
 	wake_up(&audio_data.wait);
 
@@ -100,7 +100,7 @@ static unsigned int audio_poll(struct file *file,
 	if (atomic_read(&audio_data.read_ready))
 		mask |= POLLIN | POLLRDNORM;
 
-	pr_info("%s: exit mask is %#x\n", __func__, mask);
+	pr_debug("%s: exit mask is %#x\n", __func__, mask);
 	return mask;
 }
 

@@ -286,7 +286,7 @@ static enum tfa_error tfa98xx_tfa_start(struct tfa98xx *tfa98xx, int next_profil
 		start_time = ktime_get_boottime();
 	}
 
-	dev_info(&tfa98xx->i2c->dev, "tfa98xx_tfa_start enter\n");
+	dev_dbg(&tfa98xx->i2c->dev, "tfa98xx_tfa_start enter\n");
 
 	err = tfa_dev_start(tfa98xx->tfa, next_profile, vstep);
 
@@ -2529,7 +2529,7 @@ static void tfa98xx_dsp_init(struct tfa98xx *tfa98xx)
 
 			/* Subsystem ready, tfa init complete */
 			tfa98xx->dsp_init = TFA98XX_DSP_INIT_DONE;
-			dev_info(&tfa98xx->i2c->dev,
+			dev_dbg(&tfa98xx->i2c->dev,
 						"tfa_dev_start success (%d)\n",
 						tfa98xx->init_count);
 			/* cancel other pending init works */
@@ -2793,7 +2793,7 @@ static int tfa98xx_hw_params(struct snd_pcm_substream *substream,
 
 	/* Supported */
 	rate = params_rate(params);
-	pr_info("Requested rate: %d, sample size: %d, physical size: %d\n",
+	pr_debug("Requested rate: %d, sample size: %d, physical size: %d\n",
 			rate, snd_pcm_format_width(params_format(params)),
 			snd_pcm_format_physical_width(params_format(params)));
 
@@ -2806,7 +2806,7 @@ static int tfa98xx_hw_params(struct snd_pcm_substream *substream,
 		pr_err("tfa98xx: invalid sample rate %d.\n", rate);
 		return -EINVAL;
 	}
-	pr_info("mixer profile:container profile = [%d:%d]\n", tfa98xx_mixer_profile, prof_idx);
+	pr_debug("mixer profile:container profile = [%d:%d]\n", tfa98xx_mixer_profile, prof_idx);
 
 
 	/* update 'real' profile (container profile) */
@@ -2841,7 +2841,7 @@ enum Tfa98xx_Error tfa98xx_adsp_send_calib_values(struct tfa98xx *tfa98xx)
 		bytes[nr++] = (uint8_t)((dsp_cal_value >> 8) & 0xff);
 		bytes[nr++] = (uint8_t)(dsp_cal_value & 0xff);
 
-		dev_err(&tfa98xx->i2c->dev, "%s: cal value 0x%x\n", __func__, dsp_cal_value);
+		dev_dbg(&tfa98xx->i2c->dev, "%s: cal value 0x%x\n", __func__, dsp_cal_value);
 
 		/* Receiver RDC */
 		if (value > 20000)
@@ -2859,7 +2859,7 @@ enum Tfa98xx_Error tfa98xx_adsp_send_calib_values(struct tfa98xx *tfa98xx)
 		bytes[nr++] = (uint8_t)((dsp_cal_value >> 8) & 0xff);
 		bytes[nr++] = (uint8_t)(dsp_cal_value & 0xff);
 
-		dev_err(&tfa98xx->i2c->dev, "%s: cal value 0x%x\n", __func__, dsp_cal_value);
+		dev_dbg(&tfa98xx->i2c->dev, "%s: cal value 0x%x\n", __func__, dsp_cal_value);
 
 		/* Speaker RDC */
 		if (value > 4000)
@@ -2926,7 +2926,7 @@ int tfa98xx_keyreg_print(struct tfa98xx *tfa98xx)
               return -EIO;
        }
 
-       dev_err(&tfa98xx->i2c->dev, "[00h:0x%x],[10h:0x%x],[11h:0x%x],[13h:0x%x],[14h:0x%x],[6eh:0x%x],\n",
+       dev_dbg(&tfa98xx->i2c->dev, "[00h:0x%x],[10h:0x%x],[11h:0x%x],[13h:0x%x],[14h:0x%x],[6eh:0x%x],\n",
               SYS_CONTROL0, STATUS_FLAGS0, STATUS_FLAGS1, STATUS_FLAGS3,STATUS_FLAGS4, STATUS_FLAGS5);
        return 0;
 
@@ -2938,7 +2938,7 @@ static int tfa98xx_mute(struct snd_soc_dai *dai, int mute, int stream)
 	struct snd_soc_codec *codec = dai->codec;
 	struct tfa98xx *tfa98xx = snd_soc_codec_get_drvdata(codec);
 
-	dev_info(&tfa98xx->i2c->dev, "%s: state: %d\n", __func__, mute);
+	dev_dbg(&tfa98xx->i2c->dev, "%s: state: %d\n", __func__, mute);
 
 	if (no_start) {
 		pr_info("no_start parameter set no tfa_dev_start or tfa_dev_stop, returning\n");
@@ -2954,7 +2954,7 @@ static int tfa98xx_mute(struct snd_soc_dai *dai, int mute, int stream)
 		else
 			tfa98xx->cstream = 0;
 
-		pr_err("%s: pstream = %d\n", __func__, tfa98xx->pstream);
+		pr_debug("%s: pstream = %d\n", __func__, tfa98xx->pstream);
 
 		if (tfa98xx->pstream != 0 || tfa98xx->cstream != 0)
 			return 0;
@@ -2969,7 +2969,7 @@ static int tfa98xx_mute(struct snd_soc_dai *dai, int mute, int stream)
 
 		cancel_delayed_work_sync(&tfa98xx->init_work);
 
-		pr_err("%s: tfa98xx->dsp_fw_state = %d\n", __func__, tfa98xx->dsp_fw_state);
+		pr_debug("%s: tfa98xx->dsp_fw_state = %d\n", __func__, tfa98xx->dsp_fw_state);
 
 		if (tfa98xx->dsp_fw_state != TFA98XX_DSP_FW_OK)
 			return 0;
