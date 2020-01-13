@@ -675,7 +675,7 @@ static int aw8697_haptic_stop_delay(struct aw8697 *aw8697)
             return 0;
         }
         mdelay(2);
-        pr_info("%s wait for standby, reg glb_state=0x%02x\n",
+        pr_debug("%s wait for standby, reg glb_state=0x%02x\n",
             __func__, reg_val);
     }
     pr_err("%s do not enter standby automatically\n", __func__);
@@ -3068,7 +3068,7 @@ static ssize_t aw8697_duration_store(struct device *dev,
     if (rc < 0)
         return rc;
     if (val_pre != val)
-       pr_info("%s:val:%d\n", __func__, val);
+       pr_debug("%s:val:%d\n", __func__, val);
     val_pre = val;
     /* setting 0 on duration is NOP for now */
     if (val <= 0)
@@ -3123,7 +3123,7 @@ static ssize_t aw8697_activate_store(struct device *dev,
     if (val != 0 && val != 1)
         return count;
     if (val_pre != val)
-       pr_info("%s: value=%d\n", __FUNCTION__, val);
+       pr_debug("%s: value=%d\n", __FUNCTION__, val);
     val_pre = val;
     mutex_lock(&aw8697->lock);
 /*for type Android OS's vibrator 20181225 begin*/
@@ -3267,7 +3267,7 @@ static ssize_t aw8697_vmax_store(struct device *dev,
     if (!aw8697->ram_init)
        return count;
     if (val_pre != val)
-        pr_info("%s: value=%d\n", __FUNCTION__, val);
+        pr_debug("%s: value=%d\n", __FUNCTION__, val);
     val_pre = val;
     mutex_lock(&aw8697->lock);
     aw8697->vmax = val;
@@ -3310,7 +3310,7 @@ static ssize_t aw8697_gain_store(struct device *dev,
     if (!aw8697->ram_init)
        return count;
     if (val_pre != val)
-        pr_info("%s: value=%d\n", __FUNCTION__, val);
+        pr_debug("%s: value=%d\n", __FUNCTION__, val);
     val_pre = val;
     mutex_lock(&aw8697->lock);
     aw8697->gain = val;
@@ -5128,13 +5128,13 @@ static void aw8697_vibrator_work_routine(struct work_struct *work)
        if (aw8697->pm_awake == false) {
            __pm_stay_awake(&aw8697->vibrator_on);
            aw8697->pm_awake = true;
-           pr_info("aw8697->pm_awake:%d\n", aw8697->pm_awake);
+           pr_debug("aw8697->pm_awake:%d\n", aw8697->pm_awake);
        }
     } else {
         if (aw8697->pm_awake) {
             __pm_relax(&aw8697->vibrator_on);
             aw8697->pm_awake = false;
-            pr_info("aw8697->pm_awake:%d\n", aw8697->pm_awake);
+            pr_debug("aw8697->pm_awake:%d\n", aw8697->pm_awake);
         }
     }
     aw8697_haptic_stop(aw8697);
