@@ -57,6 +57,16 @@
 
 #include "../fingerprint_detect/fingerprint_detect.h"
 
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE_FPRG
+#include <linux/moduleparam.h>
+
+bool screen_off = false;
+bool haptic_feedback_disable_fprg = false;
+module_param(haptic_feedback_disable_fprg, bool, 0644);
+
+void hap_ignore_next_request(void);
+#endif
+
 #define VER_MAJOR   1
 #define VER_MINOR   2
 #define PATCH_LEVEL 8
@@ -332,6 +342,12 @@ static irqreturn_t gf_irq(int irq, void *handle)
 	if (gf_dev->async)
 		kill_fasync(&gf_dev->async, SIGIO, POLL_IN);
 #endif
+
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE_FPRG
+	if (screen_off && haptic_feedback_disable_fprg)
+		hap_ignore_next_request();
+#endif
+
 	return IRQ_HANDLED;
 }
 
@@ -800,6 +816,9 @@ static int goodix_fb_state_chg_callback(
 #endif
 			}
 			gf_dev->screen_state = 0;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE_FPRG
+			screen_off = 1;
+#endif
 			sysfs_notify(&gf_dev->spi->dev.kobj,
 				NULL, dev_attr_screen_state.attr.name);
 			break;
@@ -816,6 +835,9 @@ static int goodix_fb_state_chg_callback(
 #endif
 			}
 			gf_dev->screen_state = 1;
+#ifdef CONFIG_HAPTIC_FEEDBACK_DISABLE_FPRG
+			screen_off = 0;
+#endif
 			sysfs_notify(&gf_dev->spi->dev.kobj,
 				NULL, dev_attr_screen_state.attr.name);
 			break;
