@@ -797,6 +797,11 @@ KBUILD_CFLAGS += $(call cc-disable-warning, tautological-compare)
 # See modpost pattern 2
 KBUILD_CFLAGS += $(call cc-option, -mno-global-merge,)
 KBUILD_CFLAGS += $(call cc-option, -fcatch-undefined-behavior)
+
+# clang's -Wpointer-to-int-cast warns when casting to enums, which does not match GCC.
+# Disable that part of the warning because it is very noisy across the kernel and does
+# not point out any real bugs.
+KBUILD_CFLAGS += $(call cc-disable-warning, pointer-to-enum-cast)
 else
 
 KBUILD_CFLAGS += $(call cc-option,-fno-delete-null-pointer-checks,)
