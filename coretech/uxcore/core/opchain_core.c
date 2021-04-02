@@ -29,7 +29,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include "../opchain_define.h"
+#include "linux/oem/opchain_define.h"
 #include "opchain_proxy.h"
 #include "opchain_struct_offset_helper.h"
 #include <linux/atomic.h>

@@ -32,9 +32,9 @@
 #include <asm/page.h>
 
 #include "../kernel/sched/sched.h"
-#include "../opchain_define.h"
+#include "linux/oem/opchain_define.h"
 #include "opchain_core.h"
-#include "../opchain_helper.h"
+#include <oneplus/uxcore/opchain_helper.h>
 
 unsigned int __read_mostly boost;
 unsigned int __read_mostly boost_tl;
