@@ -16,6 +16,7 @@
 #include <linux/kernel.h>
 #include <linux/kobject.h>
 #include <linux/blkdev.h>
+#include <linux/timer.h>
 #ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
 #include <linux/sched.h>
 #include <linux/sched/signal.h>
@@ -28,6 +29,10 @@
 #include "../../../../kernel/sched/sched.h"
 #include "../../../../kernel/sched/walt.h"
 #include "../../../../include/linux/cred.h"
+
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+#pragma clang diagnostic ignored "-Wincompatible-pointer-types"
+#endif
 
 struct io_latency_para{
 	bool ctrl;
@@ -98,14 +103,11 @@ u64 rt_high_thresh = DEFAULT_RT_HT;
 struct sched_stat_rt_para rt_para[NR_CPUS];
 struct cpu_preempt_stat preempt_para[NR_CPUS];
 
-#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
-static struct timer_list task_load_info_timer;
 u64 ohm_read_thresh = 1048576; /* default 1MB per 5s */
 u64 ohm_write_thresh = 1048576; /* default 1MB per 5s */
 u64 ohm_runtime_thresh_fg = 4000000000; /* default 4s per 5s */
 u64 ohm_runtime_thresh_bg = 1500000000; /* default 1.5s per 5s */
 static u32 ohm_sample_time = 5; /* default 5s */
-#endif
 
 struct sched_stat_para oneplus_sched_para[OHM_SCHED_TOTAL];
 static char *sched_list[OHM_TYPE_TOTAL] = {
@@ -1607,7 +1609,7 @@ static const struct file_operations proc_runtime_overload_fops = {
 static struct proc_dir_entry *oneplus_healthinfo;
 
 #ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
-static void adjust_window() {
+static void adjust_window(struct timer_list *t) {
 	sample_window.timestamp = jiffies_64;
 	sample_window.window_index++;
 	mod_timer(&task_load_info_timer, jiffies + ohm_sample_time*HZ);  /* 5s */
@@ -1755,13 +1757,11 @@ module_param_named(ohm_emmcio_l_ms, ohm_thresh_para[OHM_SCHED_EMMCIO].l_ms, int,
 module_param_named(ohm_emmcio_h_ms, ohm_thresh_para[OHM_SCHED_EMMCIO].h_ms, int, S_IRUGO | S_IWUSR);
 module_param_named(iowait_summ_period, iowait_summ_period, int, S_IRUGO | S_IWUSR);
 module_param_named(iowait_summ_thresh, iowait_summ_thresh, int, S_IRUGO | S_IWUSR);
-#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
 module_param_named(ohm_write_thresh, ohm_write_thresh, ullong, S_IRUGO | S_IWUSR);
 module_param_named(ohm_read_thresh, ohm_read_thresh, ullong, S_IRUGO | S_IWUSR);
 module_param_named(ohm_runtime_thresh_fg, ohm_runtime_thresh_fg, ullong, S_IRUGO | S_IWUSR);
 module_param_named(ohm_runtime_thresh_bg, ohm_runtime_thresh_bg, ullong, S_IRUGO | S_IWUSR);
 module_param_named(ohm_sample_time, ohm_sample_time, uint, S_IRUGO | S_IWUSR);
-#endif
 
 MODULE_DESCRIPTION("OnePlus healthinfo monitor");
 MODULE_LICENSE("GPL v2");
