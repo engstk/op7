@@ -34,12 +34,12 @@
 #include "guacamoles_sdx50m_dvt.dtsi"
 
 / {
-	model = "SDX50M MTP 18825 15";
+	model = "SDX50M MTP 18825 25";
 	compatible = "qcom,sm8150-mtp", "qcom,sm8150", "qcom,mtp";
 	qcom,board-id = <0x01010008 0x1>;
 	/*we can add project id to this array,uefi can auto read it,if new project,we add to this array */
 	oem,project-id = <18825>;
 	/*we can add hw id to this array,uefi can auto read it,if new hw,we add to this array  */
-	oem,hw-id = <15>;
+	oem,hw-id = <25>;
 
 };

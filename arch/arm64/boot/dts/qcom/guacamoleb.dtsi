@@ -100,7 +100,7 @@
 		};
 	};
 
-	skin-msm-therm {
+	msm-therm {
 		trips {
 			freq_config3: freq_config3 {
 				temperature = <63000>;
@@ -232,6 +232,7 @@
 	compatible = "oneplus,hall_tri_state_key";
 	status = "ok";
 	interrupt-parent = <&tlmm>;
+	project_support = <1>;
 };
 
 &qupv3_se9_i2c {

@@ -9,6 +9,8 @@ source "drivers/bus/Kconfig"
 
 source "drivers/connector/Kconfig"
 
+source "drivers/gnss/Kconfig"
+
 source "drivers/mtd/Kconfig"
 
 source "drivers/of/Kconfig"
@@ -199,6 +201,8 @@ source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
 
+source "drivers/gpu/trace/Kconfig"
+
 source "drivers/nvdimm/Kconfig"
 
 source "drivers/dax/Kconfig"
@@ -231,4 +235,5 @@ source "drivers/tri_state_key/Kconfig"
 
 source "drivers/oem_debug/Kconfig"
 source "drivers/vibrator/Kconfig"
+source "drivers/vm_fragment_monitor/Kconfig"
 endmenu

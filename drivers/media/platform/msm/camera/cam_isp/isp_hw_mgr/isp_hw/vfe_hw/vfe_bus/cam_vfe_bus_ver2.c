@@ -1,4 +1,4 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -37,6 +37,8 @@ static const char drv_name[] = "vfe_bus";
 #define CAM_VFE_BUS_VER2_PAYLOAD_MAX             256
 
 #define CAM_VFE_BUS_SET_DEBUG_REG                0x82
+
+#define CAM_VFE_BUS_LUT_WORD_SIZE_64		1
 
 #define CAM_VFE_RDI_BUS_DEFAULT_WIDTH               0xFF01
 #define CAM_VFE_RDI_BUS_DEFAULT_STRIDE              0xFF01
@@ -1357,6 +1359,34 @@ static int cam_vfe_bus_handle_wm_done_bottom_half(void *wm_node,
 	return rc;
 }
 
+static void cam_vfe_bus_dump_dmi_reg(
+	void __iomem	*mem_base,
+	uint32_t	lut_size,
+	uint32_t	lut_word_size,
+	uint32_t	lut_bank_sel)
+{
+	uint32_t	i;
+	uint32_t	val_0;
+	uint32_t	val_1;
+
+	val_0 = 0x100 | lut_bank_sel;
+	cam_io_w_mb(val_0, mem_base + 0xC24);
+	cam_io_w_mb(0, mem_base + 0xC28);
+	for (i = 0; i < lut_size; i++) {
+		if (lut_word_size == CAM_VFE_BUS_LUT_WORD_SIZE_64) {
+			val_0 = cam_io_r_mb(mem_base + 0xC30);
+			val_1 = cam_io_r_mb(mem_base + 0xC2C);
+			CAM_INFO(CAM_ISP, "Bank%d : 0x%x, LO: 0x%x, HI:0x%x",
+				lut_bank_sel, i, val_0, val_1);
+		} else {
+			val_0 = cam_io_r_mb(mem_base + 0xC30);
+			CAM_INFO(CAM_ISP, "Bank%d : 0x%x, LO: 0x%x",
+				lut_bank_sel, i, val_0);
+		}
+	}
+	cam_io_w_mb(0, mem_base + 0xC24);
+	cam_io_w_mb(0, mem_base + 0xC28);
+}
 
 static int cam_vfe_bus_err_bottom_half(void *ctx_priv,
 	void *evt_payload_priv)
@@ -1364,6 +1394,7 @@ static int cam_vfe_bus_err_bottom_half(void *ctx_priv,
 	struct cam_vfe_bus_irq_evt_payload *evt_payload;
 	struct cam_vfe_bus_ver2_common_data *common_data;
 	uint32_t val = 0;
+	uint32_t val_0 = 0;
 
 	if (!ctx_priv || !evt_payload_priv)
 		return -EINVAL;
@@ -1410,20 +1441,33 @@ static int cam_vfe_bus_err_bottom_half(void *ctx_priv,
 	if (val & 0x0800)
 		CAM_INFO(CAM_ISP, "STATs HDR BE violation");
 
-	if (val & 0x01000)
+	if (val & 0x01000) {
 		CAM_INFO(CAM_ISP, "STATs HDR BHIST violation");
+		val_0 = cam_io_r_mb(common_data->mem_base + 0xAD4);
+		CAM_INFO(CAM_ISP, "VFE_STATS_HDR_BHIST_RGN_OFFSET_CFG : Data 0x%08x", val_0);
+		val_0 = cam_io_r_mb(common_data->mem_base + 0xAD8);
+		CAM_INFO(CAM_ISP, "VFE_STATS_HDR_BHIST_RGN_NUM_CFG : Data 0x%08x", val_0);
+		cam_vfe_bus_dump_dmi_reg(common_data->mem_base, 180, CAM_VFE_BUS_LUT_WORD_SIZE_64, 0x36);
+		cam_vfe_bus_dump_dmi_reg(common_data->mem_base, 180, CAM_VFE_BUS_LUT_WORD_SIZE_64, 0x37);
+
+	}
 
 	if (val & 0x02000)
 		CAM_INFO(CAM_ISP, "STATs TINTLESS BG violation");
 
 	if (val & 0x04000)
 		CAM_INFO(CAM_ISP, "STATs BF violation");
-
 	if (val & 0x08000)
 		CAM_INFO(CAM_ISP, "STATs AWB BG UBWC violation");
 
-	if (val & 0x010000)
+	if (val & 0x010000) {
 		CAM_INFO(CAM_ISP, "STATs BHIST violation");
+		val_0 = cam_io_r_mb(common_data->mem_base + 0xBE4);
+		CAM_INFO(CAM_ISP, "VFE_STATS_BHIST_RGN_OFFSET_CFG : Data 0x%08x", val_0);
+		val_0 = cam_io_r_mb(common_data->mem_base + 0xBE8);
+		CAM_INFO(CAM_ISP, "VFE_STATS_BHIST_RGN_NUM_CFG : Data 0x%08x", val_0);
+		cam_vfe_bus_dump_dmi_reg(common_data->mem_base, 180, CAM_VFE_BUS_LUT_WORD_SIZE_64, 0x3A);
+	}
 
 	if (val & 0x020000)
 		CAM_INFO(CAM_ISP, "STATs RS violation");

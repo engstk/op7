@@ -9,10 +9,14 @@
  * published by the Free Software Foundation.
  */
 
+#ifndef CONFIG_DEBUG_FS
+#define CONFIG_DEBUG_FS 1
+#endif
+
 struct clk_hw;
 struct clk_core;
 
-#if defined(CONFIG_OF) && defined(CONFIG_COMMON_CLK)
+#if defined(CONFIG_OF)
 struct clk *__of_clk_get_from_provider(struct of_phandle_args *clkspec,
 				       const char *dev_id, const char *con_id);
 #endif
@@ -24,6 +28,7 @@ void __clk_free_clk(struct clk *clk);
 
 /* Debugfs API to print the enabled clocks */
 void clock_debug_print_enabled(bool print_parent);
+
 void clk_debug_print_hw(struct clk_core *clk, struct seq_file *f);
 
 #define WARN_CLK(core, name, cond, fmt, ...) do {		\
@@ -54,5 +59,4 @@ static struct clk_hw *__clk_get_hw(struct clk *clk)
 	return (struct clk_hw *)clk;
 }
 
-void clock_debug_print_enabled(void) {}
 #endif

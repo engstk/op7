@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -34,9 +34,6 @@
 
 #define SDE_ERROR_CONN(c, fmt, ...) SDE_ERROR("conn%d " fmt,\
 		(c) ? (c)->base.base.id : -1, ##__VA_ARGS__)
-static u32 dither_matrix[DITHER_MATRIX_SZ] = {
-	15, 7, 13, 5, 3, 11, 1, 9, 12, 4, 14, 6, 0, 8, 2, 10
-};
 
 static const struct drm_prop_enum_list e_topology_name[] = {
 	{SDE_RM_TOPOLOGY_NONE,	"sde_none"},
@@ -64,6 +61,7 @@ static const struct drm_prop_enum_list e_power_mode[] = {
 static const struct drm_prop_enum_list e_qsync_mode[] = {
 	{SDE_RM_QSYNC_DISABLED,	"none"},
 	{SDE_RM_QSYNC_CONTINUOUS_MODE,	"continuous"},
+	{SDE_RM_QSYNC_ONE_SHOT_MODE,	"one_shot"},
 };
 
 static int sde_backlight_device_update_status(struct backlight_device *bd)
@@ -94,8 +92,7 @@ static int sde_backlight_device_update_status(struct backlight_device *bd)
 	if (!bl_lvl && brightness)
 		bl_lvl = 1;
 
-	if (display->panel->bl_config.bl_update ==
-		BL_UPDATE_DELAY_UNTIL_FIRST_FRAME && !c_conn->allow_bl_update) {
+	if (!c_conn->allow_bl_update) {
 		c_conn->unset_bl_level = bl_lvl;
 		return 0;
 	}
@@ -135,7 +132,7 @@ static int sde_backlight_setup(struct sde_connector *c_conn,
 	if (!c_conn || !dev || !dev->dev) {
 		SDE_ERROR("invalid param\n");
 		return -EINVAL;
-	} else if (c_conn->connector_type != DRM_MODE_CONNECTOR_DSI) {
+	} else if (!c_conn->ops.set_backlight) {
 		return 0;
 	}
 
@@ -241,60 +238,12 @@ void sde_connector_unregister_event(struct drm_connector *connector,
 	(void)sde_connector_register_event(connector, event_idx, 0, 0);
 }
 
-static int _sde_connector_get_default_dither_cfg_v1(
-		struct sde_connector *c_conn, void *cfg)
-{
-	struct drm_msm_dither *dither_cfg = (struct drm_msm_dither *)cfg;
-	enum dsi_pixel_format dst_format = DSI_PIXEL_FORMAT_MAX;
-
-	if (!c_conn || !cfg) {
-		SDE_ERROR("invalid argument(s), c_conn %pK, cfg %pK\n",
-				c_conn, cfg);
-		return -EINVAL;
-	}
-
-	if (!c_conn->ops.get_dst_format) {
-		SDE_DEBUG("get_dst_format is unavailable\n");
-		return 0;
-	}
-
-	dst_format = c_conn->ops.get_dst_format(&c_conn->base, c_conn->display);
-	switch (dst_format) {
-	case DSI_PIXEL_FORMAT_RGB888:
-		dither_cfg->c0_bitdepth = 8;
-		dither_cfg->c1_bitdepth = 8;
-		dither_cfg->c2_bitdepth = 8;
-		dither_cfg->c3_bitdepth = 8;
-		break;
-	case DSI_PIXEL_FORMAT_RGB666:
-	case DSI_PIXEL_FORMAT_RGB666_LOOSE:
-		dither_cfg->c0_bitdepth = 6;
-		dither_cfg->c1_bitdepth = 6;
-		dither_cfg->c2_bitdepth = 6;
-		dither_cfg->c3_bitdepth = 6;
-		break;
-	default:
-		SDE_DEBUG("no default dither config for dst_format %d\n",
-			dst_format);
-		return -ENODATA;
-	}
-
-	memcpy(&dither_cfg->matrix, dither_matrix,
-			sizeof(u32) * DITHER_MATRIX_SZ);
-	dither_cfg->temporal_en = 0;
-	return 0;
-}
-
 static void _sde_connector_install_dither_property(struct drm_device *dev,
 		struct sde_kms *sde_kms, struct sde_connector *c_conn)
 {
 	char prop_name[DRM_PROP_NAME_LEN];
 	struct sde_mdss_cfg *catalog = NULL;
-	struct drm_property_blob *blob_ptr;
-	void *cfg;
-	int ret = 0;
-	u32 version = 0, len = 0;
-	bool defalut_dither_needed = false;
+	u32 version = 0;
 
 	if (!dev || !sde_kms || !c_conn) {
 		SDE_ERROR("invld args (s), dev %pK, sde_kms %pK, c_conn %pK\n",
@@ -312,54 +261,51 @@ static void _sde_connector_install_dither_property(struct drm_device *dev,
 		msm_property_install_blob(&c_conn->property_info, prop_name,
 			DRM_MODE_PROP_BLOB,
 			CONNECTOR_PROP_PP_DITHER);
-		len = sizeof(struct drm_msm_dither);
-		cfg = kzalloc(len, GFP_KERNEL);
-		if (!cfg)
-			return;
-
-		ret = _sde_connector_get_default_dither_cfg_v1(c_conn, cfg);
-		if (!ret)
-			defalut_dither_needed = true;
 		break;
 	default:
 		SDE_ERROR("unsupported dither version %d\n", version);
 		return;
 	}
-
-	if (defalut_dither_needed) {
-		blob_ptr = drm_property_create_blob(dev, len, cfg);
-		if (IS_ERR_OR_NULL(blob_ptr))
-			goto exit;
-		c_conn->blob_dither = blob_ptr;
-	}
-exit:
-	kfree(cfg);
 }
 
 int sde_connector_get_dither_cfg(struct drm_connector *conn,
 			struct drm_connector_state *state, void **cfg,
-			size_t *len)
+			size_t *len, bool idle_pc)
 {
 	struct sde_connector *c_conn = NULL;
 	struct sde_connector_state *c_state = NULL;
 	size_t dither_sz = 0;
+	bool is_dirty;
 	u32 *p = (u32 *)cfg;
 
-	if (!conn || !state || !p)
+	if (!conn || !state || !p) {
+		SDE_ERROR("invalid arguments\n");
 		return -EINVAL;
+	}
 
 	c_conn = to_sde_connector(conn);
 	c_state = to_sde_connector_state(state);
 
-	/* try to get user config data first */
-	*cfg = msm_property_get_blob(&c_conn->property_info,
-					&c_state->property_state,
-					&dither_sz,
-					CONNECTOR_PROP_PP_DITHER);
-	/* if user config data doesn't exist, use default dither blob */
-	if (*cfg == NULL && c_conn->blob_dither) {
-		*cfg = &c_conn->blob_dither->data;
-		dither_sz = c_conn->blob_dither->length;
+	is_dirty = msm_property_is_dirty(&c_conn->property_info,
+			&c_state->property_state,
+			CONNECTOR_PROP_PP_DITHER);
+
+	if (!is_dirty && !idle_pc) {
+		return -ENODATA;
+	} else if (is_dirty || idle_pc) {
+		*cfg = msm_property_get_blob(&c_conn->property_info,
+				&c_state->property_state,
+				&dither_sz,
+				CONNECTOR_PROP_PP_DITHER);
+		/*
+		 * In idle_pc use case return early, when dither is
+		 * already disabled.
+		 */
+		if (idle_pc && *cfg == NULL)
+			return -ENODATA;
+		/* disable dither based on user config data */
+		else if (*cfg == NULL)
+			return 0;
 	}
 	*len = dither_sz;
 	return 0;
@@ -541,8 +487,7 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 
 	bl_config = &dsi_display->panel->bl_config;
 
-	if (dsi_display->panel->bl_config.bl_update ==
-		BL_UPDATE_DELAY_UNTIL_FIRST_FRAME && !c_conn->allow_bl_update) {
+	if (!c_conn->allow_bl_update) {
 		c_conn->unset_bl_level = bl_config->bl_level;
 		return 0;
 	}
@@ -569,64 +514,16 @@ static int _sde_connector_update_bl_scale(struct sde_connector *c_conn)
 
 	return rc;
 }
-//xiaoxiaohuan@OnePlus.MultiMediaService,2018/08/04, add for fingerprint
 extern bool sde_crtc_get_fingerprint_mode(struct drm_crtc_state *crtc_state);
 extern bool sde_crtc_get_fingerprint_pressed(struct drm_crtc_state *crtc_state);
 extern int dsi_display_set_hbm_mode(struct drm_connector *connector, int level);
-static int dsi_panel_tx_cmd_set_op(struct dsi_panel *panel,
-				enum dsi_cmd_set_type type)
-{
-	int rc = 0, i = 0;
-	ssize_t len;
-	struct dsi_cmd_desc *cmds;
-	u32 count;
-	enum dsi_cmd_set_state state;
-	struct dsi_display_mode *mode;
-	const struct mipi_dsi_host_ops *ops = panel->host->ops;
-
-	if (!panel || !panel->cur_mode)
-		return -EINVAL;
-
-//	if (panel->type == EXT_BRIDGE)
-//		return 0;
-
-	mode = panel->cur_mode;
-
-	cmds = mode->priv_info->cmd_sets[type].cmds;
-	count = mode->priv_info->cmd_sets[type].count;
-	state = mode->priv_info->cmd_sets[type].state;
-
-	if (count == 0) {
-		pr_debug("[%s] No commands to be sent for state(%d)\n",
-			 panel->name, type);
-		goto error;
-	}
-
-	for (i = 0; i < count; i++) {
-		if (state == DSI_CMD_SET_STATE_LP)
-			cmds->msg.flags |= MIPI_DSI_MSG_USE_LPM;
-
-		if (cmds->last_command)
-			cmds->msg.flags |= MIPI_DSI_MSG_LASTCOMMAND;
-
-		len = ops->transfer(panel->host, &cmds->msg);
-		if (len < 0) {
-			rc = len;
-			pr_err("failed to set cmds(%d), rc=%d\n", type, rc);
-			goto error;
-		}
-		if (cmds->post_wait_ms)
-			usleep_range(cmds->post_wait_ms*1000,
-					((cmds->post_wait_ms*1000)+10));
-		cmds++;
-	}
-error:
-	return rc;
-}
 int aod_layer_hide = 0;
 extern bool HBM_flag ;
 extern int oneplus_dim_status;
-extern bool aod_real_flag;
+extern int oneplus_onscreenfp_status;
+extern bool aod_fod_flag;
+extern bool real_aod_mode;
+extern bool aod_complete;
 extern bool finger_type;
 
 extern int op_dimlayer_bl;
@@ -647,6 +544,8 @@ int sde_connector_update_backlight(struct drm_connector *connector)
 	return 0;
 }
 
+extern int dsi_panel_tx_cmd_set(struct dsi_panel *panel,
+				enum dsi_cmd_set_type type);
 static int _sde_connector_update_hbm(struct sde_connector *c_conn)
 {
 	struct drm_connector *connector = &c_conn->base;
@@ -677,31 +576,34 @@ static int _sde_connector_update_hbm(struct sde_connector *c_conn)
 	    !c_conn->encoder->crtc->state) {
 		return 0;
 	}
-    if(!finger_type){
-        if(dsi_display->panel->aod_status==1) {
-            if(!(sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state)))
-                fingerprint_mode = false;
-            else{
-                fingerprint_mode = sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state);
-            }
-        }else {
-        if(!(sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state)))
+	if (!finger_type) {
+		if (dsi_display->panel->aod_status == 1) {
+			if (real_aod_mode && !aod_complete) {
+				pr_err("aod not complete\n");
+				return 0;
+			}
+			if (!(sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state)))
+				fingerprint_mode = false;
+			else
+				fingerprint_mode = sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state);
+			} else {
+		if (!(sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state)))
             fingerprint_mode = false;
-        else if(oneplus_dim_status == 1)
+		else if (oneplus_dim_status == 1)
             fingerprint_mode = !!oneplus_dim_status;
         else
             fingerprint_mode = sde_crtc_get_fingerprint_mode(c_conn->encoder->crtc->state);
         }
-    }else{
-        if(dsi_display->panel->aod_status==1) {
-            if(oneplus_dim_status==5)
-                fingerprint_mode = false;
-            else if(oneplus_dim_status==2)
-                fingerprint_mode = !!oneplus_dim_status;
-        }else{
-            return 0;
-        }
-    }
+		} else {
+			if (dsi_display->panel->aod_status == 1) {
+				if (oneplus_dim_status == 5)
+					fingerprint_mode = false;
+				else if (oneplus_dim_status == 2)
+					fingerprint_mode = !!oneplus_dim_status;
+			} else {
+				return 0;
+			}
+		}
 
 	if (fingerprint_mode != dsi_display->panel->is_hbm_enabled) {
 		//struct drm_encoder *drm_enc = c_conn->encoder;
@@ -711,17 +613,22 @@ static int _sde_connector_update_hbm(struct sde_connector *c_conn)
 			HBM_flag=true;
 			mutex_lock(&dsi_display->panel->panel_lock);
 			if (dsi_display->panel->aod_status==1 && !finger_type) {
-				pr_err("Send DSI_CMD_AOD_OFF_HBM_ON_SETTING cmds\n");
-				rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_AOD_OFF_HBM_ON_SETTING);
-				aod_real_flag = true;
+				if (dsi_display->panel->aod_mode == 2) {
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_AOD_OFF_HBM_ON_SETTING);
+					pr_err("Send DSI_CMD_AOD_OFF_HBM_ON_SETTING cmds\n");
+				} else {
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_REAL_AOD_OFF_HBM_ON_SETTING);
+					pr_err("Send DSI_CMD_REAL_AOD_OFF_HBM_ON_SETTING cmds\n");
+				}
+				aod_fod_flag = true;
 			}
 			else if (dsi_display->panel->aod_status == 1 && finger_type) {
-				rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_SET_AOD_OFF_NEW);
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_AOD_OFF_NEW);
 				pr_err("qdt aod off\n");
 			}
 			else {
 				//sde_encoder_poll_line_counts(drm_enc);
-				rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_SET_HBM_ON_5);
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_HBM_ON_5);
 				pr_err("Send DSI_CMD_SET_HBM_ON_5 cmds\n");
 			}
 			SDE_ATRACE_END("set_hbm_on");
@@ -738,34 +645,49 @@ static int _sde_connector_update_hbm(struct sde_connector *c_conn)
 			mutex_lock(&dsi_display->panel->panel_lock);
 			if (dsi_display->panel->aod_status == 1 && !finger_type) {
 				if(oneplus_dim_status == 5){
-					rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_SET_HBM_OFF);
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_HBM_OFF);
 					pr_err("Send DSI_CMD_SET_HBM_OFF cmds\n");
-					aod_real_flag = true;
+					aod_fod_flag = true;
+					dsi_display->panel->aod_status = 0;
 					oneplus_dim_status = 0;
 					aod_layer_hide = 1;
 				}
 				else {
-					rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_HBM_OFF_AOD_ON_SETTING);
-					pr_err("Send DSI_CMD_HBM_OFF_AOD_ON_SETTING cmds\n");
+					if (oneplus_onscreenfp_status == 4) {
+						if (dsi_display->panel->aod_mode == 5 || dsi_display->panel->aod_mode == 4) {
+							rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_AOD_ON_5);
+							pr_err("Send DSI_CMD_SET_AOD_ON_5 cmds\n");
+						} else if (dsi_display->panel->aod_mode == 1) {
+							rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_AOD_ON_1);
+							pr_err("Send DSI_CMD_SET_AOD_ON_1 cmds\n");
+						} else if (dsi_display->panel->aod_mode == 3) {
+							rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_AOD_ON_3);
+							pr_err("Send DSI_CMD_SET_AOD_ON_3 cmds\n");
+						}
+					} else if (oneplus_onscreenfp_status == 0) {
+						rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_HBM_OFF_AOD_ON_SETTING);
+						aod_layer_hide = 1;
+						pr_err("Send DSI_CMD_HBM_OFF_AOD_ON_SETTING  cmds\n");
+					}
 				}
 			}
 			else if (dsi_display->panel->aod_status == 1 && finger_type) {
 				if(oneplus_dim_status == 5) {
 					pr_err("qdt aod off dim 5\n");
 				} else {
-					rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_SET_AOD_ON_2);
+					rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_AOD_ON_2);
 					pr_err("qdt aod on dim 0\n");
 				}
 			}
 			else {
 				HBM_flag = false;
 				//sde_encoder_poll_line_counts(drm_enc);
-				rc = dsi_panel_tx_cmd_set_op(dsi_display->panel, DSI_CMD_SET_HBM_OFF);
+				rc = dsi_panel_tx_cmd_set(dsi_display->panel, DSI_CMD_SET_HBM_OFF);
 				pr_err("Send DSI_CMD_SET_HBM_OFF cmds\n");
 			}
 			SDE_ATRACE_END("set_hbm_off");
 			mutex_unlock(&dsi_display->panel->panel_lock);
-			_sde_connector_update_bl_scale(c_conn);	
+			_sde_connector_update_bl_scale(c_conn);
 			if (rc) {
 				pr_err("failed to send DSI_CMD_HBM_OFF cmds, rc=%d\n", rc);
 				return rc;
@@ -777,21 +699,30 @@ static int _sde_connector_update_hbm(struct sde_connector *c_conn)
 
 void sde_connector_set_qsync_params(struct drm_connector *connector)
 {
-	struct sde_connector *c_conn = to_sde_connector(connector);
-	u32 qsync_propval;
+	struct sde_connector *c_conn;
+	struct sde_connector_state *c_state;
+	u32 qsync_propval = 0;
+	bool prop_dirty;
 
 	if (!connector)
 		return;
 
+	c_conn = to_sde_connector(connector);
+	c_state = to_sde_connector_state(connector->state);
 	c_conn->qsync_updated = false;
-	qsync_propval = sde_connector_get_property(c_conn->base.state,
-			CONNECTOR_PROP_QSYNC_MODE);
 
-	if (qsync_propval != c_conn->qsync_mode) {
-		SDE_DEBUG("updated qsync mode %d -> %d\n", c_conn->qsync_mode,
-				qsync_propval);
-		c_conn->qsync_updated = true;
-		c_conn->qsync_mode = qsync_propval;
+	prop_dirty = msm_property_is_dirty(&c_conn->property_info,
+					&c_state->property_state,
+					CONNECTOR_PROP_QSYNC_MODE);
+	if (prop_dirty) {
+		qsync_propval = sde_connector_get_property(c_conn->base.state,
+						CONNECTOR_PROP_QSYNC_MODE);
+		if (qsync_propval != c_conn->qsync_mode) {
+			SDE_DEBUG("updated qsync mode %d -> %d\n",
+				  c_conn->qsync_mode, qsync_propval);
+			c_conn->qsync_updated = true;
+			c_conn->qsync_mode = qsync_propval;
+		}
 	}
 }
 
@@ -862,7 +793,6 @@ int sde_connector_pre_kickoff(struct drm_connector *connector)
 	}
 
 	rc = _sde_connector_update_dirty_properties(connector);
-	/*xiaoxiaohuan@OnePlus.MultiMediaService,2018/08/04, add for fingerprint*/
 	rc = _sde_connector_update_hbm(c_conn);
 	if (rc) {
 		SDE_EVT32(connector->base.id, SDE_EVTLOG_ERROR);
@@ -874,13 +804,6 @@ int sde_connector_pre_kickoff(struct drm_connector *connector)
 
 	params.rois = &c_state->rois;
 	params.hdr_meta = &c_state->hdr_meta;
-	params.qsync_update = false;
-
-	if (c_conn->qsync_updated) {
-		params.qsync_mode = c_conn->qsync_mode;
-		params.qsync_update = true;
-		SDE_EVT32(connector->base.id, params.qsync_mode);
-	}
 
 	SDE_EVT32_VERBOSE(connector->base.id);
 
@@ -890,25 +813,73 @@ end:
 	return rc;
 }
 
+int sde_connector_prepare_commit(struct drm_connector *connector)
+{
+	struct sde_connector *c_conn;
+	struct sde_connector_state *c_state;
+	struct msm_display_conn_params params;
+	int rc;
+
+	if (!connector) {
+		SDE_ERROR("invalid argument\n");
+		return -EINVAL;
+	}
+
+	c_conn = to_sde_connector(connector);
+	c_state = to_sde_connector_state(connector->state);
+	if (!c_conn->display) {
+		SDE_ERROR("invalid connector display\n");
+		return -EINVAL;
+	}
+
+	if (!c_conn->ops.prepare_commit)
+		return 0;
+
+	memset(&params, 0, sizeof(params));
+
+	if (c_conn->qsync_updated) {
+		params.qsync_mode = c_conn->qsync_mode;
+		params.qsync_update = true;
+	}
+
+	rc = c_conn->ops.prepare_commit(c_conn->display, &params);
+
+	SDE_EVT32(connector->base.id, params.qsync_mode,
+		  params.qsync_update, rc);
+
+	return rc;
+}
+
+
 void sde_connector_helper_bridge_disable(struct drm_connector *connector)
 {
 	int rc;
 	struct sde_connector *c_conn = NULL;
+	struct dsi_display *display;
+	bool poms_pending = false;
 
 	if (!connector)
 		return;
 
-	rc = _sde_connector_update_dirty_properties(connector);
-	if (rc) {
-		SDE_ERROR("conn %d final pre kickoff failed %d\n",
-				connector->base.id, rc);
-		SDE_EVT32(connector->base.id, SDE_EVTLOG_ERROR);
+	c_conn = to_sde_connector(connector);
+
+	if (c_conn->connector_type == DRM_MODE_CONNECTOR_DSI) {
+		display = (struct dsi_display *) c_conn->display;
+		poms_pending = display->poms_pending;
+	}
+
+	if (!poms_pending) {
+		rc = _sde_connector_update_dirty_properties(connector);
+		if (rc) {
+			SDE_ERROR("conn %d final pre kickoff failed %d\n",
+					connector->base.id, rc);
+			SDE_EVT32(connector->base.id, SDE_EVTLOG_ERROR);
+		}
 	}
 
 	/* Disable ESD thread */
 	sde_connector_schedule_status_work(connector, false);
 
-	c_conn = to_sde_connector(connector);
 	if (c_conn->bl_device) {
 		c_conn->bl_device->props.power = FB_BLANK_POWERDOWN;
 		c_conn->bl_device->props.state |= BL_CORE_FBBLANK;
@@ -1424,13 +1395,17 @@ static int sde_connector_atomic_set_property(struct drm_connector *connector,
 		// c_conn->bl_scale_ad = val;
 		// c_conn->bl_scale_dirty = true;
 		break;
+	case CONNECTOR_PROP_QSYNC_MODE:
+		msm_property_set_dirty(&c_conn->property_info,
+				&c_state->property_state, idx);
+		break;
 	default:
 		break;
 	}
 
 	if (idx == CONNECTOR_PROP_HDR_METADATA) {
 		rc = _sde_connector_set_ext_hdr_info(c_conn,
-			c_state, (void *)(uintptr_t)val);
+			c_state, (void __user *)(uintptr_t)val);
 		if (rc)
 			SDE_ERROR_CONN(c_conn, "cannot set hdr info %d\n", rc);
 	}
@@ -1737,6 +1712,7 @@ static ssize_t _sde_debugfs_conn_cmd_tx_sts_read(struct file *file,
 		return 0;
 	}
 
+	blen = min_t(size_t, MAX_CMD_PAYLOAD_SIZE, count);
 	if (copy_to_user(buf, buffer, blen)) {
 		SDE_ERROR("copy to user buffer failed\n");
 		return -EFAULT;
@@ -2019,13 +1995,36 @@ static int sde_connector_atomic_check(struct drm_connector *connector,
 		struct drm_connector_state *new_conn_state)
 {
 	struct sde_connector *c_conn;
+	struct drm_crtc_state *crtc_state;
+	struct sde_connector_state *c_state;
+	bool qsync_dirty;
 
 	if (!connector) {
 		SDE_ERROR("invalid connector\n");
-		return 0;
+		return -EINVAL;
+	}
+
+	if (!new_conn_state) {
+		SDE_ERROR("invalid connector state\n");
+		return -EINVAL;
 	}
 
 	c_conn = to_sde_connector(connector);
+	c_state = to_sde_connector_state(new_conn_state);
+
+	if (new_conn_state->crtc) {
+		crtc_state = drm_atomic_get_new_crtc_state(
+			new_conn_state->state, new_conn_state->crtc);
+
+		qsync_dirty = msm_property_is_dirty(&c_conn->property_info,
+					&c_state->property_state,
+					CONNECTOR_PROP_QSYNC_MODE);
+
+		if (drm_atomic_crtc_needs_modeset(crtc_state) && qsync_dirty) {
+			SDE_ERROR("invalid qsync update during modeset\n");
+			return -EINVAL;
+		}
+	}
 
 	if (c_conn->ops.atomic_check)
 		return c_conn->ops.atomic_check(connector,
@@ -2533,7 +2532,6 @@ struct drm_connector *sde_connector_init(struct drm_device *dev,
 	msm_property_install_range(&c_conn->property_info, "ad_bl_scale",
 		0x0, 0, MAX_AD_BL_SCALE_LEVEL, MAX_AD_BL_SCALE_LEVEL,
 		CONNECTOR_PROP_AD_BL_SCALE);
-	//xiaoxiaohuan@OnePlus.MultiMediaService,2018/08/04, add for fingerprint
 	msm_property_install_range(&c_conn->property_info,"CONNECTOR_CUST",
 			0x0, 0, INT_MAX, 0, CONNECTOR_PROP_CUSTOM);
 

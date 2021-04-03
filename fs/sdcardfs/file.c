@@ -236,6 +236,8 @@ static int sdcardfs_open(struct inode *inode, struct file *file)
 	struct dentry *parent = dget_parent(dentry);
 	struct sdcardfs_sb_info *sbi = SDCARDFS_SB(dentry->d_sb);
 	const struct cred *saved_cred = NULL;
+	struct fuse_package *fp = current->fpack;
+	char *iname;
 
 	/* don't open unhashed/deleted files */
 	if (d_unhashed(dentry)) {
@@ -276,6 +278,15 @@ static int sdcardfs_open(struct inode *inode, struct file *file)
 		}
 	} else {
 		sdcardfs_set_lower_file(file, lower_file);
+		if (!err && fp && fp->fuse_open_req && !fp->filp && fp->iname) {
+			iname = inode_name(inode);
+			if (iname && !strcasecmp(iname, fp->iname)) {
+				fp->filp = file;
+				get_file(file);
+			}
+			if (iname)
+				__putname(iname);
+		}
 	}
 
 	if (err)

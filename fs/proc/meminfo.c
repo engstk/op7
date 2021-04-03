@@ -19,11 +19,13 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include "internal.h"
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
 #include <oneplus/defrag/defrag_helper.h>
 #ifdef CONFIG_ONEPLUS_HEALTHINFO
 #include <linux/oem/oneplus_ion.h>
 #endif
+
+int read_fastrpc_usage(void);
+int kgsl_pool_size_total(void);
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
 {
@@ -55,6 +57,7 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	long cached;
 	long available;
 	unsigned long pages[NR_LRU_LISTS];
+	unsigned long sreclaimable, sunreclaim;
 	int lru;
 
 	si_meminfo(&i);
@@ -70,6 +73,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 		pages[lru] = global_node_page_state(NR_LRU_BASE + lru);
 
 	available = si_mem_available();
+	sreclaimable = global_node_page_state(NR_SLAB_RECLAIMABLE);
+	sunreclaim = global_node_page_state(NR_SLAB_UNRECLAIMABLE);
 
 	show_val_kb(m, "MemTotal:       ", i.totalram);
 	show_val_kb(m, "MemFree:        ", i.freeram);
@@ -124,16 +129,17 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "Mapped:         ",
 		    global_node_page_state(NR_FILE_MAPPED));
 	show_val_kb(m, "Shmem:          ", i.sharedram);
-	show_val_kb(m, "Slab:           ",
-		    global_node_page_state(NR_SLAB_RECLAIMABLE) +
-		    global_node_page_state(NR_SLAB_UNRECLAIMABLE));
-
-	show_val_kb(m, "SReclaimable:   ",
-		    global_node_page_state(NR_SLAB_RECLAIMABLE));
-	show_val_kb(m, "SUnreclaim:     ",
-		    global_node_page_state(NR_SLAB_UNRECLAIMABLE));
+	show_val_kb(m, "KReclaimable:   ", sreclaimable +
+		    global_node_page_state(NR_KERNEL_MISC_RECLAIMABLE));
+	show_val_kb(m, "Slab:           ", sreclaimable + sunreclaim);
+	show_val_kb(m, "SReclaimable:   ", sreclaimable);
+	show_val_kb(m, "SUnreclaim:     ", sunreclaim);
 	seq_printf(m, "KernelStack:    %8lu kB\n",
 		   global_zone_page_state(NR_KERNEL_STACK_KB));
+#ifdef CONFIG_SHADOW_CALL_STACK
+	seq_printf(m, "ShadowCallStack:%8lu kB\n",
+		   global_zone_page_state(NR_KERNEL_SCS_BYTES) / 1024);
+#endif
 	show_val_kb(m, "PageTables:     ",
 		    global_zone_page_state(NR_PAGETABLE));
 #ifdef CONFIG_QUICKLIST
@@ -178,7 +184,8 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	show_val_kb(m, "IonTotalUsed:   ", ion_total() >> PAGE_SHIFT);
 #endif
 #endif
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
+	show_val_kb(m, "FastRPCUsed:    ", read_fastrpc_usage());
+	show_val_kb(m, "KgslCache:      ", kgsl_pool_size_total());
 	show_defrag_free(m);
 	show_real_freemem(m, i.freeram);
 

@@ -54,6 +54,7 @@ struct fastchg_device_info {
 	bool is_mcl_verion;
 	bool is_3800mAh_4p45_support;
 	bool is_4085mAh_4p45_support;
+	bool is_4085mAh_4p45_lcd_support;
 	bool is_skin_temp_high;
 	bool is_call_on;
 	int mcu_reset_ahead;
@@ -168,6 +169,32 @@ static void init_dash_4085mAh_4p45_exist_node(void)
 	}
 }
 
+static ssize_t dash_4085mAh_4p45_lcd_exist_read(struct file *p_file,
+	char __user *puser_buf, size_t count, loff_t *p_offset)
+{
+	return 0;
+}
+
+static ssize_t dash_4085mAh_4p45_lcd_exist_write(struct file *p_file,
+	const char __user *puser_buf,
+	size_t count, loff_t *p_offset)
+{
+	return 0;
+}
+
+static const struct file_operations dash_4085mAh_4p45_lcd_exist_operations = {
+	.read = dash_4085mAh_4p45_lcd_exist_read,
+	.write = dash_4085mAh_4p45_lcd_exist_write,
+};
+
+static void init_dash_4085mAh_4p45_lcd_exist_node(void)
+{
+	if (!proc_create("dash_4085_4p45_lcd_exit", 0644, NULL,
+			 &dash_4085mAh_4p45_lcd_exist_operations)){
+		pr_info("Failed to register dash_4085mAh_4p45_lcd node\n");
+	}
+}
+
 static ssize_t n76e_exist_read(struct file *p_file,
 	char __user *puser_buf, size_t count, loff_t *p_offset)
 {
@@ -252,6 +279,35 @@ static void init_enhance_dash_exist_node(void)
 
 //for mcu_data irq delay issue 2017.10.14@Infi
 extern void msm_cpuidle_set_sleep_disable(bool disable);
+
+static int is_usb_pluged(void)
+{
+	static struct power_supply *psy;
+	union power_supply_propval ret = {0,};
+	int usb_present, rc;
+
+	if (!psy) {
+		psy = power_supply_get_by_name("usb");
+		if (!psy) {
+			pr_err("fastchg failed to get ps usb\n");
+			return -EINVAL;
+		}
+	}
+
+	rc = power_supply_get_property(psy, POWER_SUPPLY_PROP_PRESENT, &ret);
+	if (rc) {
+		pr_err("fastchg failed to get  POWER_SUPPLY_PROP_PRESENT\n");
+		return -EINVAL;
+	}
+
+	if (ret.intval < 0) {
+		pr_err("fastchg get POWER_SUPPLY_PROP_PRESENT EINVAL \n");
+		return -EINVAL;
+	}
+
+	usb_present = ret.intval;
+	return usb_present;
+}
 
 void opchg_set_data_active(struct fastchg_device_info *chip)
 {
@@ -876,6 +932,7 @@ void switch_mode_to_normal(void)
 	mcu_en_gpio_set(1);
 	msm_cpuidle_set_sleep_disable(false);
 	op_check_charger_collapse_rerun_aicl();
+	update_disconnect_pd_status(false);
 }
 
 static void update_fast_chg_started(void)
@@ -1227,12 +1284,16 @@ static long  dash_dev_ioctl(struct file *filp, unsigned int cmd,
 			dash_write(di, ALLOW_DATA);
 			break;
 		case DASH_NOTIFY_UPDATE_ADAPTER_INFO:
-			di->dash_enhance = arg;
-			if (!di->batt_psy)
-				di->batt_psy =
-					power_supply_get_by_name("battery");
-			if (di->batt_psy)
-				power_supply_changed(di->batt_psy);
+			if (is_usb_pluged() > 0) {
+				di->dash_enhance = arg;
+				if (!di->batt_psy)
+					di->batt_psy =
+						power_supply_get_by_name("battery");
+				if (di->batt_psy)
+					power_supply_changed(di->batt_psy);
+			} else {
+				pr_err("usb is not online.");
+			}
 			break;
 		case DASH_NOTIFY_BAD_CONNECTED:
 		case DASH_NOTIFY_NORMAL_TEMP_FULL:
@@ -1393,6 +1454,8 @@ static int dash_parse_dt(struct fastchg_device_info *di)
 		"op,3800mAh_4p45_support");
 	di->is_4085mAh_4p45_support = of_property_read_bool(dev_node,
 		"op,4085mAh_4p45_support");
+	di->is_4085mAh_4p45_lcd_support = of_property_read_bool(dev_node,
+		"op,4085mAh_4p45_lcd_support");
 	rc = of_property_read_u32(dev_node,
 			"op,fw-erase-count", &di->erase_count);
 	if (rc < 0)
@@ -1553,6 +1616,9 @@ static void check_4p45_support(struct fastchg_device_info *di)
 	} else if (di->is_4085mAh_4p45_support) {
 		init_dash_4085mAh_4p45_exist_node();
 		pr_info("4085mAh_4p45 dash exist\n");
+	} else if (di->is_4085mAh_4p45_lcd_support && !di->is_4085mAh_4p45_support) {
+		init_dash_4085mAh_4p45_lcd_exist_node();
+		pr_info("4085mAh_4p45_lcd dash exist\n");
 	} else {
 		pr_info("ST 4p45 dash not exist\n");
 	}

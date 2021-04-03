@@ -23,6 +23,8 @@
 #include <linux/uaccess.h>
 #include <asm/arch_timer.h>
 #include <linux/debugfs.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
 #include "rpmh_master_stat.h"
 #include <soc/qcom/boot_stats.h>
 
@@ -278,6 +280,48 @@ static const struct file_operations rpmh_master_stats_fops = {
 #endif
 };
 
+static ssize_t stats_show(struct kobject *kobj,
+				      struct kobj_attribute *attr, char *buf)
+{
+	struct msm_rpmstats_private_data prvdata;
+
+	prvdata.reg_base = ioremap_nocache(gpdata->phys_addr_base,
+					gpdata->phys_size);
+
+	if (!prvdata.reg_base) {
+		pr_err("%s: ERROR could not ioremap start=%pa, len=%u\n",
+			__func__, &gpdata->phys_addr_base,
+			gpdata->phys_size);
+		return -EBUSY;
+	}
+
+	prvdata.read_idx = prvdata.len = 0;
+	prvdata.platform_data = gpdata;
+	prvdata.num_records = RPM_STATS_NUM_REC;
+
+	if (prvdata.read_idx < prvdata.num_records)
+		prvdata.len = msm_rpmstats_copy_stats(&prvdata);
+
+	return snprintf(buf, 480, "%s", prvdata.buf);
+}
+
+static struct kobj_attribute stats_attribute =
+__ATTR_RO(stats);
+
+static struct kobj_attribute master_stats_attribute =
+__ATTR_RO(master_stats);
+
+static struct attribute *rpmh_attrs[] = {
+	 &stats_attribute.attr,
+	 &master_stats_attribute.attr,
+	 NULL,
+};
+
+static struct attribute_group rpmh_attr_group = {
+	.name = "rpmh",
+	.attrs = rpmh_attrs,
+};
+
 static int msm_rpmstats_probe(struct platform_device *pdev)
 {
 	struct msm_rpmstats_platform_data *pdata;
@@ -285,6 +329,7 @@ static int msm_rpmstats_probe(struct platform_device *pdev)
 	u32 offset_addr = 0;
 	void __iomem *phys_ptr = NULL;
 	char *key;
+	int ret;
 
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
@@ -326,6 +371,8 @@ static int msm_rpmstats_probe(struct platform_device *pdev)
 
 	debugfs_create_file("master_stats", 0444, debugfs_root, NULL,
 		&rpmh_master_stats_fops);
+
+	ret = sysfs_create_group(power_kobj, &rpmh_attr_group);
 
 	gpdata = pdata;
 

@@ -1,23 +1,26 @@
-Tfa98xx device
+TFA9898 SmartpA
 
-Required Properties
-- compatible		Must be "compatible = "nxp,tfa98xx".
+Required properties:
 
-Example:
+  - compatible : "nxp,tfa98xx"
 
+  - reg : I2C address of the device
 
-	&qupv3_se4_i2c {
-	tfa98xx_right: tfa98xx_right@34 {
-			       compatible = "nxp,tfa98xx";
-			       reg = <0x34>;
-			       reset-gpio = <&tlmm 37 0>;
-			       status = "ok";
-		       };
+  - reset-gpio : gpio used for HW reset
 
-	tfa98xx_left: tfa98xx_left@35 {
-			      compatible = "nxp,tfa98xx";
-			      reg = <0x35>;
-			      reset-gpio = <&tlmm 37 0>;
-			      status = "ok";
-		      };
+  - dvdd-supply : Power supply for PA's dvdd
+
+  - dvdd-voltage : Minimum and maximum voltage in uV to set for power supply
+
+  - dvdd-current : dvdd's max current in uA
+
+Examples:
+
+	i2c_smartpa@34 {
+		compatible = "nxp,tfa98xx;
+		reg = <0x34>;
+		reset-gpio = <&tlmm 68 0>;
+		dvdd-supply = <&pm660_l9>;
+		dvdd-voltage = <1800000 1800000>;
+		dvdd-current = <15000>;
 	};

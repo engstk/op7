@@ -91,9 +91,11 @@
 #include <linux/sched/coredump.h>
 #include <linux/sched/debug.h>
 #include <linux/sched/stat.h>
+#include <linux/sched/clock.h>
 #include <linux/flex_array.h>
 #include <linux/posix-timers.h>
 #include <linux/cpufreq_times.h>
+#include <linux/oem/im.h>
 #ifdef CONFIG_ADJ_CHAIN
 #include <linux/oem/adj_chain.h>
 #endif
@@ -879,6 +881,161 @@ static const struct file_operations proc_mem_operations = {
 	.release	= mem_release,
 };
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+static int proc_stuck_trace_show(struct seq_file *m, void *v)
+{
+	struct inode *inode = m->private;
+	struct task_struct *p;
+	u64 d_time, s_time, ltt_time, mid_time, big_time, rn_time, iow_time, binder_time, futex_time;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+	task_lock(p);
+	iow_time = p->oneplus_stuck_info.d_state.iowait_ns;
+	binder_time = p->oneplus_stuck_info.s_state.binder_ns;
+	futex_time = p->oneplus_stuck_info.s_state.futex_ns;
+
+	d_time = p->oneplus_stuck_info.d_state.iowait_ns + p->oneplus_stuck_info.d_state.mutex_ns +
+		p->oneplus_stuck_info.d_state.downread_ns + p->oneplus_stuck_info.d_state.downwrite_ns +
+		p->oneplus_stuck_info.d_state.other_ns;
+	s_time = p->oneplus_stuck_info.s_state.binder_ns + p->oneplus_stuck_info.s_state.futex_ns +
+		p->oneplus_stuck_info.s_state.epoll_ns + p->oneplus_stuck_info.s_state.other_ns;
+
+	ltt_time = p->oneplus_stuck_info.ltt_running_state;
+
+	mid_time = p->oneplus_stuck_info.mid_running_state;
+
+	big_time = p->oneplus_stuck_info.big_running_state;
+
+	rn_time = p->oneplus_stuck_info.runnable_state;
+
+	task_unlock(p);
+
+	seq_printf(m, "BR:%llu MR:%llu LR:%llu RN:%llu D:%llu IOW:%llu S:%llu BD:%llu FT:%llu\n",
+		big_time / NSEC_PER_MSEC, mid_time / NSEC_PER_MSEC, ltt_time / NSEC_PER_MSEC,
+		rn_time / NSEC_PER_MSEC, d_time / NSEC_PER_MSEC, iow_time / NSEC_PER_MSEC,
+		s_time / NSEC_PER_MSEC, binder_time / NSEC_PER_MSEC, futex_time / NSEC_PER_MSEC);
+	put_task_struct(p);
+	return 0;
+}
+
+static int proc_stuck_trace_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, proc_stuck_trace_show, inode);
+}
+
+static ssize_t proc_stuck_trace_write(struct file *file, const char __user *buf,
+	size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	char buffer[PROC_NUMBUF];
+	int err, stuck_trace;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+
+	err = kstrtoint(strstrip(buffer), 0, &stuck_trace);
+	if (err)
+		return err;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	if (stuck_trace == 1) {
+		task->stuck_trace = 1;
+	} else if (stuck_trace == 0) {
+		task->stuck_trace = 0;
+		memset(&task->oneplus_stuck_info, 0, sizeof(struct oneplus_uifirst_monitor_info));
+	}
+
+	put_task_struct(task);
+	return count;
+}
+
+static const struct file_operations proc_stuck_trace_operations = {
+	.open       = proc_stuck_trace_open,
+	.write      = proc_stuck_trace_write,
+	.read       = seq_read,
+	.llseek     = seq_lseek,
+	.release    = single_release,
+};
+#endif /*CONFIG_ONEPLUS_HEALTHINFO*/
+
+#ifdef CONFIG_UXCHAIN
+static int proc_static_ux_show(struct seq_file *m, void *v)
+{
+	struct inode *inode = m->private;
+	struct task_struct *p;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+	seq_printf(m, "%d\n", p->static_ux);
+	put_task_struct(p);
+	return 0;
+}
+
+static int proc_static_ux_open(struct inode	*inode, struct file *filp)
+{
+	return single_open(filp, proc_static_ux_show, inode);
+}
+
+static ssize_t proc_static_ux_write(struct file *file, const char __user *buf,
+				size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	char buffer[PROC_NUMBUF];
+	int err, static_ux;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count))
+		return -EFAULT;
+	err = kstrtoint(strstrip(buffer), 0, &static_ux);
+	if (err)
+		return err;
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	task->static_ux = static_ux != 0 ? 1 : 0;
+
+	put_task_struct(task);
+	return count;
+}
+
+static ssize_t proc_static_ux_read(struct file *file, char __user *buf,
+							    size_t count, loff_t *ppos)
+{
+	char buffer[PROC_NUMBUF];
+	struct task_struct *task = NULL;
+	int static_ux = -1;
+	size_t len = 0;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+	static_ux = task->static_ux;
+	put_task_struct(task);
+	len = snprintf(buffer, sizeof(buffer), "%d\n", static_ux);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static const struct file_operations proc_static_ux_operations = {
+	.open       = proc_static_ux_open,
+	.write      = proc_static_ux_write,
+	.read       = proc_static_ux_read,
+	.llseek     = seq_lseek,
+	.release    = single_release,
+};
+#endif
+
 static int environ_open(struct inode *inode, struct file *file)
 {
 	return __mem_open(inode, file, PTRACE_MODE_READ);
@@ -1054,9 +1211,8 @@ static int __set_oom_adj(struct file *file, int oom_adj, bool legacy)
 		}
 	}
 
-	/* CONFIG_MEMPLUS add start by bin.zhong@ATSI */
+
 	memplus_state_check(legacy, oom_adj, task, 0, 0);
-	/* add end */
 
 	task->signal->oom_score_adj = oom_adj;
 #ifdef CONFIG_ADJ_CHAIN
@@ -2619,66 +2775,19 @@ static const struct file_operations proc_pid_set_timerslack_ns_operations = {
 	.release	= single_release,
 };
 
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-static ssize_t main_boost_switch_read(struct file *file,
-			char __user *buf, size_t count, loff_t *ppos)
+#ifdef CONFIG_IM
+static int proc_im_flag(struct seq_file *m, struct pid_namespace *ns,
+				struct pid *pid, struct task_struct *task)
 {
-	struct task_struct *task = get_proc_task(file_inode(file));
-	char buffer[PROC_NUMBUF];
-	size_t len;
-	int main_boost_switch;
+#define IM_TAG_DESC_LEN (128)
+	char desc[IM_TAG_DESC_LEN] = {0};
 
-	if (!task)
-		return -ESRCH;
-
-	main_boost_switch = task->main_boost_switch;
-
-	put_task_struct(task);
-
-	len = snprintf(buffer, sizeof(buffer), "%d\n", main_boost_switch);
-	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+	im_to_str(task->im_flag, desc, IM_TAG_DESC_LEN);
+	desc[IM_TAG_DESC_LEN - 1] = '\0';
+	seq_printf(m, "%d %s\n", task->im_flag, desc);
+	return 0;
 }
-
-static ssize_t main_boost_switch_write(struct file *file,
-			const char __user *buf, size_t count, loff_t *ppos)
-{
-	struct task_struct *task;
-	char buffer[PROC_NUMBUF];
-	int main_boost_switch;
-	int err;
-
-	memset(buffer, 0, sizeof(buffer));
-
-	if (count > sizeof(buffer) - 1)
-		count = sizeof(buffer) - 1;
-	if (copy_from_user(buffer, buf, count)) {
-		err = -EFAULT;
-		goto out;
-	}
-
-	err = kstrtoint(strstrip(buffer), 0, &main_boost_switch);
-	if (err)
-		goto out;
-
-	task = get_proc_task(file_inode(file));
-	if (!task) {
-		err = -ESRCH;
-		goto out;
-	}
-
-	task->main_boost_switch = main_boost_switch;
-
-	put_task_struct(task);
-
-out:
-	return err < 0 ? err : count;
-}
-
-
-static const struct file_operations proc_main_boost_switch_operations = {
-	.read		= main_boost_switch_read,
-	.write		= main_boost_switch_write,
-};
+#endif /* CONFIG_IM */
 
 static int proc_pident_instantiate(struct inode *dir,
 	struct dentry *dentry, struct task_struct *task, const void *ptr)
@@ -3063,6 +3172,119 @@ static const struct file_operations proc_hung_task_detection_enabled_operations 
 };
 #endif
 
+static ssize_t proc_sched_task_boost_read(struct file *file,
+			   char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task = get_proc_task(file_inode(file));
+	char buffer[PROC_NUMBUF];
+	int sched_boost;
+	size_t len;
+
+	if (!task)
+		return -ESRCH;
+	sched_boost = task->boost;
+	put_task_struct(task);
+	len = snprintf(buffer, sizeof(buffer), "%d\n", sched_boost);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_sched_task_boost_write(struct file *file,
+		   const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task = get_proc_task(file_inode(file));
+	char buffer[PROC_NUMBUF];
+	int sched_boost;
+	int err;
+
+	if (!task)
+		return -ESRCH;
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	err = kstrtoint(strstrip(buffer), 0, &sched_boost);
+	if (err)
+		goto out;
+	if (sched_boost < 0 || sched_boost > 2) {
+		err = -EINVAL;
+		goto out;
+	}
+
+	task->boost = sched_boost;
+	if (sched_boost == 0)
+		task->boost_period = 0;
+out:
+	put_task_struct(task);
+	return err < 0 ? err : count;
+}
+
+static ssize_t proc_sched_task_boost_period_read(struct file *file,
+			   char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task = get_proc_task(file_inode(file));
+	char buffer[PROC_NUMBUF];
+	u64 sched_boost_period_ms = 0;
+	size_t len;
+
+	if (!task)
+		return -ESRCH;
+	sched_boost_period_ms = div64_ul(task->boost_period, 1000000UL);
+	put_task_struct(task);
+	len = snprintf(buffer, sizeof(buffer), "%llu\n", sched_boost_period_ms);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static ssize_t proc_sched_task_boost_period_write(struct file *file,
+		   const char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task = get_proc_task(file_inode(file));
+	char buffer[PROC_NUMBUF];
+	unsigned int sched_boost_period;
+	int err;
+
+	if (!task)
+		return -ESRCH;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	err = kstrtouint(strstrip(buffer), 0, &sched_boost_period);
+	if (err)
+		goto out;
+	if (task->boost == 0 && sched_boost_period) {
+		/* setting boost period without boost is invalid */
+		err = -EINVAL;
+		goto out;
+	}
+
+	task->boost_period = (u64)sched_boost_period * 1000 * 1000;
+	task->boost_expires = sched_clock() + task->boost_period;
+out:
+	put_task_struct(task);
+	return err < 0 ? err : count;
+}
+
+static const struct file_operations proc_task_boost_enabled_operations = {
+	.read       = proc_sched_task_boost_read,
+	.write      = proc_sched_task_boost_write,
+	.llseek     = generic_file_llseek,
+};
+
+static const struct file_operations proc_task_boost_period_operations = {
+	.read		= proc_sched_task_boost_period_read,
+	.write		= proc_sched_task_boost_period_write,
+	.llseek		= generic_file_llseek,
+};
+
 #ifdef CONFIG_USER_NS
 static int proc_id_map_open(struct inode *inode, struct file *file,
 	const struct seq_operations *seq_ops)
@@ -3206,6 +3428,33 @@ static int proc_pid_personality(struct seq_file *m, struct pid_namespace *ns,
 	return err;
 }
 
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+static int proc_tli_info_show(struct seq_file *m, struct pid_namespace *ns,
+				struct pid *pid, struct task_struct *task)
+{
+	u64 window_index = sample_window.window_index;
+	u64 timestamp = sample_window.timestamp;
+
+	seq_puts(m, "sample window   ----------------\n");
+	seq_printf(m, "window_index:%llu,timestamp:%llu\n", window_index, timestamp);
+	seq_puts(m, "task_tfi_slot 0 ----------------\n");
+	seq_printf(m, "read_bytes:%llu\n", task->tli[0].read_bytes);
+	seq_printf(m, "write_bytes:%llu\n", task->tli[0].write_bytes);
+	seq_printf(m, "exec_time_fg:%llu\n", task->tli[0].runtime[1]);
+	seq_printf(m, "exec_time_bg:%llu\n", task->tli[0].runtime[0]);
+	seq_printf(m, "sample_index:%llu\n", task->tli[0].task_sample_index);
+	seq_printf(m, "overlod_flag:%016llx\n", task->tli[0].tli_overload_flag);
+	seq_puts(m, "task_tfi_slot 1 ----------------\n");
+	seq_printf(m, "read_bytes:%llu\n", task->tli[1].read_bytes);
+	seq_printf(m, "write_bytes:%llu\n", task->tli[1].write_bytes);
+	seq_printf(m, "exec_time_fg:%llu\n", task->tli[1].runtime[1]);
+	seq_printf(m, "exec_time_bg:%llu\n", task->tli[1].runtime[0]);
+	seq_printf(m, "sample_index:%llu\n", task->tli[1].task_sample_index);
+	seq_printf(m, "overlod_flag:%016llx\n", task->tli[1].tli_overload_flag);
+	return 0;
+}
+#endif /* CONFIG_ONEPLUS_TASKLOAD_INFO */
+
 #ifdef CONFIG_LIVEPATCH
 static int proc_pid_patch_state(struct seq_file *m, struct pid_namespace *ns,
 				struct pid *pid, struct task_struct *task)
@@ -3279,6 +3528,134 @@ static const struct file_operations proc_pid_memplus_type_operations = {
 };
 #endif
 
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+static ssize_t vm_fragment_max_gap_read(struct file *file,
+				char __user *buf, size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	char buffer[PROC_NUMBUF];
+	size_t len;
+	int vm_fragment_gap_max = 0;
+	int gl_fragment_gap_max = 0;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	mm = get_task_mm(task);
+	if (!mm) {
+		put_task_struct(task);
+		return -ENOMEM;
+	}
+
+	if (RB_EMPTY_ROOT(&mm->mm_rb)) {
+		mmput(mm);
+		put_task_struct(task);
+		return -ENOMEM;
+	}
+
+	vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
+	vm_fragment_gap_max = (int)(vma->rb_subtree_gap >> 20);
+	gl_fragment_gap_max = (int)(vma->rb_glfragment_gap >> 20);
+
+	mmput(mm);
+	put_task_struct(task);
+
+	len = snprintf(buffer, sizeof(buffer), "%d %d\n", vm_fragment_gap_max, gl_fragment_gap_max);
+	return simple_read_from_buffer(buf, count, ppos, buffer, len);
+}
+
+static const struct file_operations proc_vm_fragment_monitor_operations = {
+	.read = vm_fragment_max_gap_read,
+};
+#endif
+
+#include <linux/random.h>
+static int va_feature = 0x7;
+module_param(va_feature, int, 0644);
+static ssize_t proc_va_feature_read(struct file *file, char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	char buffer[32];
+	int ret;
+
+	if (!test_thread_flag(TIF_32BIT))
+		return -EINVAL;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	ret = -EINVAL;
+	mm = get_task_mm(task);
+	if (mm) {
+		if (mm->va_feature & 0x4) {
+			ret = snprintf(buffer, sizeof(buffer), "%d\n",
+					(mm->zygoteheap_in_MB > 64) ? mm->zygoteheap_in_MB : 64);
+			if (ret > 0)
+				ret = simple_read_from_buffer(buf, count, ppos,
+						buffer, ret);
+		}
+		mmput(mm);
+	}
+
+	put_task_struct(task);
+
+	return ret;
+}
+
+static ssize_t proc_va_feature_write(struct file *file, const char __user *buf,
+		size_t count, loff_t *ppos)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	int ret;
+	unsigned int heapsize;
+
+	if (!test_thread_flag(TIF_32BIT))
+		return -ENOTTY;
+
+	task = get_proc_task(file_inode(file));
+	if (!task)
+		return -ESRCH;
+
+	ret = kstrtouint_from_user(buf, count, 0, &heapsize);
+	if (ret) {
+		put_task_struct(task);
+		return ret;
+	}
+
+	mm = get_task_mm(task);
+	if (mm) {
+		mm->va_feature = va_feature;
+
+		/* useless to print comm, always "main" */
+		if (mm->va_feature & 0x1) {
+			mm->va_feature_rnd = (0x4900000 + (get_random_long() % 0x1e00000)) & ~(0xffff);
+			special_arch_pick_mmap_layout(mm);
+		}
+
+		if ((mm->va_feature & 0x4) && (mm->zygoteheap_in_MB == 0))
+			mm->zygoteheap_in_MB = heapsize;
+
+		mmput(mm);
+	}
+
+	put_task_struct(task);
+
+	return count;
+}
+
+static const struct file_operations proc_va_feature_operations = {
+	.read           = proc_va_feature_read,
+	.write          = proc_va_feature_write,
+};
+
+
 /*
  * Thread groups
  */
@@ -3305,6 +3682,8 @@ static const struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_SCHED_WALT
 	REG("sched_init_task_load", 00644, proc_pid_sched_init_task_load_operations),
 	REG("sched_group_id", 00666, proc_pid_sched_group_id_operations),
+	REG("sched_boost", 0666,  proc_task_boost_enabled_operations),
+	REG("sched_boost_period_ms", 0666, proc_task_boost_period_operations),
 #endif
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",      S_IRUGO|S_IWUSR, proc_pid_sched_operations),
@@ -3394,13 +3773,17 @@ static const struct pid_entry tgid_base_stuff[] = {
 	REG("timers",	  S_IRUGO, proc_timers_operations),
 #endif
 	REG("timerslack_ns", S_IRUGO|S_IWUGO, proc_pid_set_timerslack_ns_operations),
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-	REG("main_boost_switch", 0666, proc_main_boost_switch_operations),
 #ifdef CONFIG_LIVEPATCH
 	ONE("patch_state",  S_IRUSR, proc_pid_patch_state),
 #endif
 #ifdef CONFIG_CPU_FREQ_TIMES
 	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	REG("stuck_info", 0666, proc_stuck_trace_operations),
+#endif
+#ifdef CONFIG_IM
+	ONE("im_flag", 0444, proc_im_flag),
 #endif
 #ifdef CONFIG_MEMPLUS
 	REG("memplus_type", 0666,
@@ -3409,7 +3792,16 @@ static const struct pid_entry tgid_base_stuff[] = {
 #ifdef CONFIG_SMART_BOOST
 	REG("page_hot_count", 0666, proc_page_hot_count_operations),
 #endif
-
+#ifdef CONFIG_UXCHAIN
+	REG("static_ux", 0666, proc_static_ux_operations),
+#endif
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+	REG("vm_fragment_gap_max", 0666, proc_vm_fragment_monitor_operations),
+#endif
+	REG("va_feature", 0666, proc_va_feature_operations),
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+	ONE("tli_info", 0444, proc_tli_info_show),
+#endif
 };
 
 static int proc_tgid_base_readdir(struct file *file, struct dir_context *ctx)
@@ -3423,6 +3815,15 @@ static const struct file_operations proc_tgid_base_operations = {
 	.iterate_shared	= proc_tgid_base_readdir,
 	.llseek		= generic_file_llseek,
 };
+
+struct pid *tgid_pidfd_to_pid(const struct file *file)
+{
+	if (!d_is_dir(file->f_path.dentry) ||
+	    (file->f_op != &proc_tgid_base_operations))
+		return ERR_PTR(-EBADF);
+
+	return proc_pid(file_inode(file));
+}
 
 static struct dentry *proc_tgid_base_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
@@ -3803,6 +4204,15 @@ static const struct pid_entry tid_base_stuff[] = {
 #endif
 #ifdef CONFIG_CPU_FREQ_TIMES
 	ONE("time_in_state", 0444, proc_time_in_state_show),
+#endif
+#ifdef CONFIG_IM
+	ONE("im_flag", 0444, proc_im_flag),
+#endif
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+	ONE("tli_info", 0444, proc_tli_info_show),
+#endif
+#ifdef CONFIG_UXCHAIN
+	REG("static_ux", 0666, proc_static_ux_operations),
 #endif
 };
 

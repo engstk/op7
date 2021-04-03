@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -262,6 +262,7 @@ int32_t cam_context_release_dev_to_hw(struct cam_context *ctx,
 	ctx->session_hdl = -1;
 	ctx->dev_hdl = -1;
 	ctx->link_hdl = -1;
+	ctx->last_flush_req = 0;
 
 	return 0;
 }

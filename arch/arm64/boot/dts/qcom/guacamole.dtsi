@@ -87,7 +87,7 @@
 		};
 	};
 
-	skin-msm-therm {
+	msm-therm {
 		trips {
 			freq_config3: freq_config3 {
 				temperature = <62000>;

@@ -145,7 +145,11 @@ struct cred {
 	struct user_struct *user;	/* real user ID subscription */
 	struct user_namespace *user_ns; /* user_ns the caps and keyrings are relative to. */
 	struct group_info *group_info;	/* supplementary groups for euid/fsgid */
-	struct rcu_head	rcu;		/* RCU deletion hook */
+	/* RCU deletion */
+	union {
+		int non_rcu;			/* Can we skip RCU deletion? */
+		struct rcu_head	rcu;		/* RCU deletion hook */
+	};
 } __randomize_layout;
 
 extern void __put_cred(struct cred *);
@@ -243,6 +247,7 @@ static inline const struct cred *get_cred(const struct cred *cred)
 {
 	struct cred *nonconst_cred = (struct cred *) cred;
 	validate_creds(cred);
+	nonconst_cred->non_rcu = 0;
 	return get_new_cred(nonconst_cred);
 }
 
@@ -400,6 +405,15 @@ do {						\
 	*(_fsuid) = __cred->fsuid;		\
 	*(_fsgid) = __cred->fsgid;		\
 } while(0)
+
+extern bool is_fg(int uid);
+static inline int task_is_fg(struct task_struct *task)
+{	int cur_uid;
+	cur_uid = task_uid(task).val;
+	if (is_fg(cur_uid))
+		return 1;
+	return 0;
+}
 
 #ifdef CONFIG_ONEPLUS_FG_OPT
 extern bool is_fg(int uid);

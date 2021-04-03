@@ -94,9 +94,9 @@ struct nf_conn {
 	struct hlist_node	nat_bysource;
 #endif
 	/* all members below initialized via memset */
-	u8 __nfct_init_offset[0];
+	struct { } __nfct_init_offset;
 
-	/* WIFI MODIFICATION */
+
 	u32 op_game_skb_len;
 	u32 op_game_detect_status;
 	u32 op_game_time_interval;
@@ -109,7 +109,7 @@ struct nf_conn {
 	s64 op_game_last_timestamp;
 	s64 op_game_special_rx_pkt_timestamp;
 	s64 op_game_rx_normal_time_record;
-	/* WIFI MODIFICATION */
+
 
 	/* If we were expected by an expectation, this will be it */
 	struct nf_conn *master;
@@ -355,6 +355,8 @@ struct nf_conn *nf_ct_tmpl_alloc(struct net *net,
 				 const struct nf_conntrack_zone *zone,
 				 gfp_t flags);
 void nf_ct_tmpl_free(struct nf_conn *tmpl);
+
+u32 nf_ct_get_id(const struct nf_conn *ct);
 
 static inline void
 nf_ct_set(struct sk_buff *skb, struct nf_conn *ct, enum ip_conntrack_info info)

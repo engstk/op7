@@ -279,19 +279,13 @@ static int init_service_locator(void)
 			SERVREG_LOC_SERVICE_VERS_V01,
 			SERVREG_LOC_SERVICE_INSTANCE_ID);
 
-	rc = wait_for_completion_interruptible_timeout(
-				&service_locator.service_available,
-				msecs_to_jiffies(LOCATOR_SERVICE_TIMEOUT));
+
+	rc = wait_for_completion_interruptible(&service_locator.service_available);
 	if (rc < 0) {
 		pr_err("Wait for locator service interrupted by signal\n");
 		goto inited;
 	}
-	if (!rc) {
-		pr_err("%s: wait for locator service timed out\n", __func__);
-		service_timedout = true;
-		rc = -ETIME;
-		goto inited;
-	}
+
 
 	service_inited = true;
 	mutex_unlock(&service_init_mutex);

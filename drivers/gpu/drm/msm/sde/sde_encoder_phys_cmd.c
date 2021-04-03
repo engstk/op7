@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2015-2019 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2015-2020 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -33,8 +33,6 @@
 	container_of(x, struct sde_encoder_phys_cmd, base)
 
 #define PP_TIMEOUT_MAX_TRIALS	4
-
-
 
 /*
  * Tearcheck sync start and continue thresholds are empirically found
@@ -528,7 +526,6 @@ static void sde_encoder_phys_cmd_mode_set(
 
 	_sde_encoder_phys_cmd_setup_irq_hw_idx(phys_enc);
 }
-
 
 static int _sde_encoder_phys_cmd_handle_ppdone_timeout(
 		struct sde_encoder_phys *phys_enc,
@@ -1130,8 +1127,8 @@ static void _sde_encoder_phys_cmd_pingpong_config(
 			phys_enc->hw_pp->idx - PINGPONG_0);
 	drm_mode_debug_printmodeline(&phys_enc->cached_mode);
 
-	if (!_sde_encoder_phys_is_ppsplit_slave(phys_enc))
-		_sde_encoder_phys_cmd_update_intf_cfg(phys_enc);
+	_sde_encoder_phys_cmd_update_intf_cfg(phys_enc);
+
 	sde_encoder_phys_cmd_tearcheck_config(phys_enc);
 }
 
@@ -1147,18 +1144,8 @@ static void sde_encoder_phys_cmd_enable_helper(
 
 	_sde_encoder_phys_cmd_pingpong_config(phys_enc);
 
-	/*
-	 * For pp-split, skip setting the flush bit for the slave intf, since
-	 * both intfs use same ctl and HW will only flush the master.
-	 */
-	if (_sde_encoder_phys_is_ppsplit(phys_enc) &&
-		!sde_encoder_phys_cmd_is_master(phys_enc))
-		goto skip_flush;
-
 	_sde_encoder_phys_cmd_update_flush_mask(phys_enc);
 
-skip_flush:
-	return;
 }
 
 static void sde_encoder_phys_cmd_enable(struct sde_encoder_phys *phys_enc)

@@ -725,6 +725,7 @@ static const struct freq_tbl ftbl_gcc_sdcc2_apps_clk_src[] = {
 	F(9600000, P_BI_TCXO, 2, 0, 0),
 	F(19200000, P_BI_TCXO, 1, 0, 0),
 	F(25000000, P_GPLL0_OUT_EVEN, 12, 0, 0),
+	F(50000000, P_GPLL0_OUT_EVEN,  6, 0, 0),
 	F(100000000, P_GPLL0_OUT_EVEN, 3, 0, 0),
 	F(202000000, P_GPLL7_OUT_MAIN, 4, 0, 0),
 	{ }
@@ -943,7 +944,7 @@ static struct clk_rcg2 gcc_usb3_prim_phy_aux_clk_src = {
 
 static struct clk_branch gcc_aggre_ufs_phy_axi_clk = {
 	.halt_reg = 0x82024,
-	.halt_check = BRANCH_HALT,
+	.halt_check = BRANCH_HALT_DELAY,
 	.hwcg_reg = 0x82024,
 	.hwcg_bit = 1,
 	.clkr = {
@@ -1391,7 +1392,7 @@ static struct clk_branch gcc_gpu_snoc_dvm_gfx_clk = {
 
 static struct clk_branch gcc_npu_axi_clk = {
 	.halt_reg = 0x4d008,
-	.halt_check = BRANCH_HALT,
+	.halt_check = BRANCH_VOTED,
 	.clkr = {
 		.enable_reg = 0x4d008,
 		.enable_mask = BIT(0),
@@ -1404,7 +1405,7 @@ static struct clk_branch gcc_npu_axi_clk = {
 
 static struct clk_branch gcc_npu_bwmon_axi_clk = {
 	.halt_reg = 0x73008,
-	.halt_check = BRANCH_HALT,
+	.halt_check = BRANCH_HALT_DELAY,
 	.clkr = {
 		.enable_reg = 0x73008,
 		.enable_mask = BIT(0),
@@ -2356,7 +2357,48 @@ static struct clk_branch gcc_video_xo_clk = {
 	},
 };
 
+/* Measure-only clock for ddrss_gcc_debug_clk. */
+static struct clk_dummy measure_only_mccc_clk = {
+	.rrate = 1000,
+	.hw.init = &(struct clk_init_data){
+		.name = "measure_only_mccc_clk",
+		.ops = &clk_dummy_ops,
+	},
+};
+
+
+/* Measure-only clock for gcc_cfg_noc_ahb_clk. */
+static struct clk_dummy measure_only_cnoc_clk = {
+	.rrate = 1000,
+	.hw.init = &(struct clk_init_data){
+		.name = "measure_only_cnoc_clk",
+		.ops = &clk_dummy_ops,
+	},
+};
+
+/* Measure-only clock for gcc_ipa_2x_clk. */
+static struct clk_dummy measure_only_ipa_2x_clk = {
+	.rrate = 1000,
+	.hw.init = &(struct clk_init_data){
+		.name = "measure_only_ipa_2x_clk",
+		.ops = &clk_dummy_ops,
+	},
+};
+
+/* Measure-only clock for gcc_sys_noc_axi_clk. */
+static struct clk_dummy measure_only_snoc_clk = {
+	.rrate = 1000,
+	.hw.init = &(struct clk_init_data){
+		.name = "measure_only_snoc_clk",
+		.ops = &clk_dummy_ops,
+	},
+};
+
 struct clk_hw *gcc_atoll_hws[] = {
+	[MEASURE_ONLY_BIMC_CLK] = &measure_only_mccc_clk.hw,
+	[MEASURE_ONLY_CNOC_CLK] = &measure_only_cnoc_clk.hw,
+	[MEASURE_ONLY_IPA_2X_CLK] = &measure_only_ipa_2x_clk.hw,
+	[MEASURE_ONLY_SNOC_CLK] = &measure_only_snoc_clk.hw,
 	[GCC_GPLL0_MAIN_DIV_CDIV] = &gcc_pll0_main_div_cdiv.hw,
 };
 

@@ -204,11 +204,13 @@ static inline long clk_get_phase(struct clk *clk)
 	return -ENOTSUPP;
 }
 
+#ifndef CONFIG_COMMON_CLK_MSM
 static inline int clk_set_duty_cycle(struct clk *clk, unsigned int num,
 				     unsigned int den)
 {
 	return -ENOTSUPP;
 }
+#endif
 
 static inline unsigned int clk_get_scaled_duty_cycle(struct clk *clk,
 						     unsigned int scale)
@@ -721,8 +723,9 @@ static inline void clk_bulk_disable_unprepare(int num_clks,
 	clk_bulk_unprepare(num_clks, clks);
 }
 
-// tedlin@ASTI 2019/06/12 add for ddrfreq query
-extern void clk_get_ddr_freq(u64* val);
+#ifdef CONFIG_HOUSTON
+extern void clk_get_ddr_freq(u64 *val);
+#endif
 
 #if defined(CONFIG_OF) && defined(CONFIG_COMMON_CLK)
 struct clk *of_clk_get(struct device_node *np, int index);

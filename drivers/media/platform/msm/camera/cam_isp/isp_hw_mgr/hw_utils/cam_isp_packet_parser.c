@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -606,6 +606,13 @@ int cam_isp_add_io_buffers(
 					io_cfg[i].mem_handle[plane_id],
 					mmu_hdl, &io_addr[plane_id], &size);
 				if (rc) {
+					CAM_INFO(CAM_ISP,
+						"Port i %d Reqid %llu res_type:%d fence:%d dir %d",
+						i,
+						prepare->packet->header.request_id,
+						io_cfg[i].resource_type,
+						io_cfg[i].fence,
+						io_cfg[i].direction);
 					CAM_ERR(CAM_ISP,
 						"no io addr for plane%d",
 						plane_id);

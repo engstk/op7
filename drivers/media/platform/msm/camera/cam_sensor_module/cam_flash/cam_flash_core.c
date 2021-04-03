@@ -1410,7 +1410,6 @@ int cam_flash_pmic_pkt_parser(struct cam_flash_ctrl *fctrl, void *arg)
 					"Apply setting failed: %d",
 					rc);
 
-			fctrl->flash_state = CAM_FLASH_STATE_CONFIG;
 			break;
 		}
 		default:

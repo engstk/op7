@@ -1,10 +1,12 @@
-/*
- * aQuantia Corporation Network Driver
- * Copyright (C) 2018 aQuantia Corporation. All rights reserved
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Atlantic Network Driver
  *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * Copyright (C) 2018 aQuantia Corporation
+ * Copyright (C) 2019-2020 Marvell International Ltd.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
  */
 
 #ifndef _ATL_FWD_H_
@@ -13,7 +15,7 @@
 #include "atl_common.h"
 
 /* Each incompatible API change bumps the API version */
-#define ATL_FWD_API_VERSION 1
+#define ATL_FWD_API_VERSION 3
 
 struct atl_fwd_event;
 
@@ -302,8 +304,7 @@ int atl_fwd_enable_ring(struct atl_fwd_ring *ring);
  *
  * 	@ring: ring to be disabled
  *
- * Stops and resets the ring. On next ring enable head and tail
- * pointers will be zero.
+ * Stops the ring.
  */
 void atl_fwd_disable_ring(struct atl_fwd_ring *ring);
 
@@ -361,6 +362,43 @@ int atl_fwd_disable_event(struct atl_fwd_event *evt);
 
 int atl_fwd_receive_skb(struct net_device *ndev, struct sk_buff *skb);
 int atl_fwd_transmit_skb(struct net_device *ndev, struct sk_buff *skb);
+
+/**
+ * atl_fwd_napi_receive_skb() - post skb to the network stack
+ *
+ * 	@ndev:		network device
+ * 	@skb:		buffer to post
+ *
+ * This function may only be called from softirq context and interrupts
+ * should be enabled.
+ */
+int atl_fwd_napi_receive_skb(struct net_device *ndev, struct sk_buff *skb);
+
+/**
+ * atl_fwd_register_notifier() - Register notifier for reset of device
+ *
+ * 	@ndev:		network device
+ * 	@n:		notifier block
+ *
+ * Register for notification on reset of device. The notifier callback
+ * receives a pointer to the affected device. Notification callback is
+ * expected to be synchronous. The receiver shall perform the expected actions
+ * upon the notification according to the notification type.
+ *
+ * Returns 0 on success or negative error code.
+ */
+int atl_fwd_register_notifier(struct net_device *ndev,
+			      struct notifier_block *n);
+int atl_fwd_unregister_notifier(struct net_device *ndev,
+				struct notifier_block *n);
+enum atl_fwd_notify {
+    ATL_FWD_NOTIFY_RESET_PREPARE, /* receiver shall stop traffic and */
+				  /* disable rings */
+    ATL_FWD_NOTIFY_RESET_COMPLETE, /* receiver shall refill descriptors and  */
+				   /* enable rings */
+    ATL_FWD_NOTIFY_MACSEC_ON,
+    ATL_FWD_NOTIFY_MACSEC_OFF,
+};
 
 enum atl_fwd_ring_state {
 	ATL_FWR_ST_ENABLED = BIT(0),

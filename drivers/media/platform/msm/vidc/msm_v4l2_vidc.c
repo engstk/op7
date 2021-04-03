@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -307,7 +307,9 @@ static const struct v4l2_file_operations msm_v4l2_vidc_fops = {
 	.open = msm_v4l2_open,
 	.release = msm_v4l2_close,
 	.unlocked_ioctl = video_ioctl2,
+#ifdef CONFIG_COMPAT
 	.compat_ioctl32 = msm_v4l2_private,
+#endif
 	.poll = msm_v4l2_poll,
 };
 
@@ -531,6 +533,8 @@ static int msm_vidc_probe_vidc_device(struct platform_device *pdev)
 	struct msm_vidc_core *core;
 	struct device *dev;
 	int nr = BASE_DEVICE_NUMBER;
+
+	place_marker("M - DRIVER Video Start");
 
 	if (!vidc_driver) {
 		dprintk(VIDC_ERR, "Invalid vidc driver\n");
@@ -781,7 +785,7 @@ static int msm_vidc_pm_suspend(struct device *dev)
 
 static int msm_vidc_pm_resume(struct device *dev)
 {
-	place_marker("vidc resumed");
+	update_marker("vidc resumed");
 	dprintk(VIDC_INFO, "%s\n", __func__);
 	return 0;
 }

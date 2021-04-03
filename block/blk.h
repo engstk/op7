@@ -19,6 +19,10 @@
 extern struct dentry *blk_debugfs_root;
 #endif
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+extern unsigned long ufs_outstanding;
+#endif
+
 struct blk_flush_queue {
 	unsigned int		flush_queue_delayed:1;
 	unsigned int		flush_pending_idx:1;
@@ -40,6 +44,8 @@ extern struct kmem_cache *blk_requestq_cachep;
 extern struct kmem_cache *request_cachep;
 extern struct kobj_type blk_queue_ktype;
 extern struct ida blk_queue_ida;
+
+extern unsigned long sysctl_blkdev_issue_flush_count;
 
 static inline struct blk_flush_queue *blk_get_flush_queue(
 		struct request_queue *q, struct blk_mq_ctx *ctx)
@@ -66,7 +72,7 @@ void blk_rq_bio_prep(struct request_queue *q, struct request *rq,
 void blk_queue_bypass_start(struct request_queue *q);
 void blk_queue_bypass_end(struct request_queue *q);
 void __blk_queue_free_tags(struct request_queue *q);
-void blk_freeze_queue(struct request_queue *q);
+bool blk_freeze_queue(struct request_queue *q);
 
 static inline void blk_queue_enter_live(struct request_queue *q)
 {
@@ -149,7 +155,7 @@ static inline void blk_clear_rq_complete(struct request *rq)
 
 void blk_insert_flush(struct request *rq);
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 extern int fg_count;
 extern int both_count;
 extern bool fg_debug;
@@ -164,7 +170,7 @@ static inline struct request *__elv_next_request(struct request_queue *q)
 
 	while (1) {
 		if (!list_empty(&q->queue_head)) {
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 			if (unlikely(!sysctl_fg_io_opt))
 				rq = list_entry_rq(q->queue_head.next);
 			else {

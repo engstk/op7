@@ -197,3 +197,5 @@ obj-y 	+= oem_debug/
 obj-y += infrared_proximity/infrared_power_control.o
 # GNSS driver
 obj-$(CONFIG_GNSS_SIRF)		+= gnsssirf/
+obj-$(CONFIG_GNSS)		+= gnss/
+obj-$(CONFIG_VM_FRAGMENT_MONITOR)	+= vm_fragment_monitor/

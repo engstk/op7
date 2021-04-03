@@ -325,7 +325,6 @@ static void freeze_cgroup(struct freezer *freezer)
 
 	css_task_iter_start(&freezer->css, 0, &it);
 	while ((task = css_task_iter_next(&it)))
-		/* huruihuan add for freezing task in cgroup despite of PF_FREEZER_SKIP flag */
 		freeze_cgroup_task(task);
 	css_task_iter_end(&it);
 }
@@ -345,7 +344,6 @@ static void unfreeze_cgroup(struct freezer *freezer)
 	}
 	css_task_iter_end(&it);
 
-	/* make sure all the thread of one uid been wake up by huruihuan */
 	read_lock(&tasklist_lock);
 	do_each_thread(g, p) {
 		if (p->real_cred &&
@@ -439,9 +437,6 @@ void unfreezer_fork(struct task_struct *task)
 {
 	struct freezer *freezer = NULL;
 
-	/*
-	 * The root cgroup is non-freezable, so we can skip locking the
-	*/
 	if (task_css_is_root(task, freezer_cgrp_id))
 		return;
 
@@ -449,8 +444,7 @@ void unfreezer_fork(struct task_struct *task)
 	freezer = task_freezer(task);
 	rcu_read_unlock();
 
-	/* Only unfreeze the "writed FROZEN" group
-	*/
+
 	if (freezer->oem_freeze_flag != 1)
 		return;
 

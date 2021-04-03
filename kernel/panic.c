@@ -167,6 +167,7 @@ void panic(const char *fmt, ...)
 	 * after setting panic_cpu) from invoking panic() again.
 	 */
 	local_irq_disable();
+	preempt_disable_notrace();
 
 	/*
 	 * It's possible to come here directly from a panic-assertion and
@@ -195,8 +196,11 @@ void panic(const char *fmt, ...)
 	vsnprintf(buf, sizeof(buf), fmt, args);
 	va_end(args);
 	dump_stack_minidump(0);
+
+	if (!get_download_mode())
+		panic_flush_device_cache(2000);
 	pr_emerg("Kernel panic - not syncing: %s\n", buf);
-        function_name = parse_function_builtin_return_address((unsigned long)__builtin_return_address(0));
+	function_name = parse_function_builtin_return_address((unsigned long)__builtin_return_address(0));
 	save_dump_reason_to_smem(buf, function_name);
 #ifdef CONFIG_DEBUG_BUGVERBOSE
 	/*

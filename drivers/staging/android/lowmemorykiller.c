@@ -54,7 +54,6 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/almk.h>
 #include <linux/show_mem_notifier.h>
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
 #include <oneplus/defrag/defrag_helper.h>
 
 #ifdef CONFIG_HIGHMEM
@@ -91,7 +90,6 @@ static int lmk_fast_run = 1;
 
 static unsigned long lowmem_deathpending_timeout;
 
-/*  bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 unsigned long get_max_minfree(void)
 {
 	return (unsigned long)lowmem_minfree[lowmem_minfree_size - 1];
@@ -227,10 +225,8 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
 		other_free = global_zone_page_state(NR_FREE_PAGES);
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
 		other_free -= DEFRAG_FREE_SIZE;
 
-		/* do not kill precess when memory is greater than 1GB */
 		if ((other_free + other_file) <  almk_min_free)
 			atomic_set(&shift_adj, 1);
 		trace_almk_vmpressure(pressure, other_free, other_file);
@@ -245,7 +241,6 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 			total_swapcache_pages();
 
 		other_free = global_zone_page_state(NR_FREE_PAGES);
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
 		other_free -= DEFRAG_FREE_SIZE;
 
 		if (other_free < lowmem_minfree[array_size - 1] &&
@@ -522,6 +517,9 @@ MODULE_PARM_DESC(time_measure, "lowmemorykiller select task time measurement");
 static bool trust_adj_chain = false;
 module_param(trust_adj_chain, bool, 0644);
 MODULE_PARM_DESC(trust_adj_chain, "lowmemorykiller trust adj chain to select task only from adj chain");
+
+// define the floor for batch kill killing process
+#define BATCH_KILL_FLOOR __adjc(900)
 
 /*
  *0 for start marker
@@ -870,6 +868,13 @@ static int lowmem_quick_select_next(
 				 * So we pick task before tasksize is compared.
 				 */
 				if (batch_kill_enable && bkcnt) {
+					/*if already selected at least one task and the adj
+					 *of next task is lower than 900, skip it and
+					 *complete the selection.
+					 */
+					if (bkcnt < bklv && cur_high < BATCH_KILL_FLOOR)
+						goto select_complete;
+
 					batch_kill_assign(bkws + cnt, p, tasksize, cur_high, bklv);
 					++cnt;
 					--bkcnt;
@@ -969,7 +974,6 @@ static unsigned long lowmem_batch_kill(
 			lowmem_print(1, "batch Killing '%s' (%d) (tgid %d), adj %hd,\n"
 					"to free %ldkB on behalf of '%s' (%d) because\n"
 					"cache %ldkB is below limit %ldkB for oom score %hd\n"
-/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 					"uid_lru_list size %ld pages\n"
 					"Free memory is %ldkB above reserved.\n"
 					"Free CMA is %ldkB\n"
@@ -985,7 +989,6 @@ static unsigned long lowmem_batch_kill(
 					current->comm, current->pid,
 					cache_size, cache_limit,
 					min_score_adj,
-/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 					UID_LRU_SIZE,
 					free,
 					global_zone_page_state(NR_FREE_CMA_PAGES) *
@@ -1048,7 +1051,6 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 	batch_kill_init(bkws);
 #endif
 	other_free = global_zone_page_state(NR_FREE_PAGES) - totalreserve_pages;
-/* bin.zhong@ASTI add CONFIG_DEFRAG */
 	other_free -= DEFRAG_FREE_SIZE;
 
 	if (global_node_page_state(NR_SHMEM) + total_swapcache_pages() +
@@ -1342,7 +1344,6 @@ quick_select_fast:
 		lowmem_print(1, "Killing '%s' (%d) (tgid %d), adj %hd,\n"
 			"to free %ldkB on behalf of '%s' (%d) because\n"
 			"cache %ldkB is below limit %ldkB for oom score %hd\n"
-/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 			"uid_lru_list size %ld pages\n"
 			"Free memory is %ldkB above reserved.\n"
 			"Free CMA is %ldkB\n"
@@ -1356,7 +1357,6 @@ quick_select_fast:
 			current->comm, current->pid,
 			cache_size, cache_limit,
 			min_score_adj,
-/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 			UID_LRU_SIZE,
 			free,
 			global_zone_page_state(NR_FREE_CMA_PAGES) *

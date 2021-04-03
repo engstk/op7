@@ -82,6 +82,90 @@ static struct pm_qos_object cpu_dma_pm_qos = {
 	.name = "cpu_dma_latency",
 };
 
+static BLOCKING_NOTIFIER_HEAD(msm_thermal_notifier);
+static struct pm_qos_constraints msm_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(msm_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &msm_thermal_notifier,
+};
+static struct pm_qos_object msm_thermal_pm_qos = {
+	.constraints = &msm_thermal_constraints,
+	.name = "msm_thermal",
+};
+
+static BLOCKING_NOTIFIER_HEAD(skin_thermal_notifier);
+static struct pm_qos_constraints skin_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(skin_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &skin_thermal_notifier,
+};
+static struct pm_qos_object skin_thermal_pm_qos = {
+	.constraints = &skin_thermal_constraints,
+	.name = "skin_thermal",
+};
+
+static BLOCKING_NOTIFIER_HEAD(modem_skin_thermal_notifier);
+static struct pm_qos_constraints modem_skin_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(modem_skin_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &modem_skin_thermal_notifier,
+};
+static struct pm_qos_object modem_skin_thermal_pm_qos = {
+	.constraints = &modem_skin_thermal_constraints,
+	.name = "modem_skin_thermal",
+};
+
+static BLOCKING_NOTIFIER_HEAD(pa1_mmw0_thermal_notifier);
+static struct pm_qos_constraints pa1_mmw0_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(pa1_mmw0_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &pa1_mmw0_thermal_notifier,
+};
+static struct pm_qos_object pa1_mmw0_thermal_pm_qos = {
+	.constraints = &pa1_mmw0_thermal_constraints,
+	.name = "mmw0_thermal",
+};
+
+static BLOCKING_NOTIFIER_HEAD(xo_mmw1_thermal_notifier);
+static struct pm_qos_constraints xo_mmw1_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(xo_mmw1_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &xo_mmw1_thermal_notifier,
+};
+static struct pm_qos_object xo_mmw1_thermal_pm_qos = {
+	.constraints = &xo_mmw1_thermal_constraints,
+	.name = "mmw1_thermal",
+};
+
+static BLOCKING_NOTIFIER_HEAD(modem_mmw2_thermal_notifier);
+static struct pm_qos_constraints modem_mmw2_thermal_constraints = {
+	.list = PLIST_HEAD_INIT(modem_mmw2_thermal_constraints.list),
+	.target_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.default_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.no_constraint_value = PM_QOS_DYNAMIC_THERMAL_DEFAULT_VALUE,
+	.type = PM_QOS_MAX,
+	.notifiers = &modem_mmw2_thermal_notifier,
+};
+static struct pm_qos_object modem_mmw2_thermal_pm_qos = {
+	.constraints = &modem_mmw2_thermal_constraints,
+	.name = "mmw2_thermal",
+};
+
 static BLOCKING_NOTIFIER_HEAD(network_lat_notifier);
 static struct pm_qos_constraints network_lat_constraints = {
 	.list = PLIST_HEAD_INIT(network_lat_constraints.list),
@@ -272,6 +356,12 @@ static struct pm_qos_object *pm_qos_array[] = {
 	&c2_cpufreq_min_pm_qos,
 	&devfreq_max_pm_qos,
 	&devfreq_min_pm_qos,
+	&msm_thermal_pm_qos,
+	&skin_thermal_pm_qos,
+	&pa1_mmw0_thermal_pm_qos,
+	&xo_mmw1_thermal_pm_qos,
+	&modem_mmw2_thermal_pm_qos,
+	&modem_skin_thermal_pm_qos,
 };
 
 static ssize_t pm_qos_power_write(struct file *filp, const char __user *buf,
@@ -403,12 +493,20 @@ static const struct file_operations pm_qos_debug_fops = {
 	.release        = single_release,
 };
 
-static inline void pm_qos_set_value_for_cpus(struct pm_qos_constraints *c,
+static inline int pm_qos_set_value_for_cpus(struct pm_qos_constraints *c,
 		struct cpumask *cpus)
 {
 	struct pm_qos_request *req = NULL;
 	int cpu;
 	s32 qos_val[NR_CPUS] = { [0 ... (NR_CPUS - 1)] = c->default_value };
+
+	/*
+	 * pm_qos_constraints can be from different classes,
+	 * Update cpumask only only for CPU_DMA_LATENCY classes
+	 */
+
+	if (c != pm_qos_array[PM_QOS_CPU_DMA_LATENCY]->constraints)
+		return -EINVAL;
 
 	plist_for_each_entry(req, &c->list, node) {
 		for_each_cpu(cpu, &req->cpus_affine) {
@@ -435,6 +533,8 @@ static inline void pm_qos_set_value_for_cpus(struct pm_qos_constraints *c,
 			cpumask_set_cpu(cpu, cpus);
 		c->target_per_cpu[cpu] = qos_val[cpu];
 	}
+
+	return 0;
 }
 
 /**
@@ -486,7 +586,7 @@ int pm_qos_update_target(struct pm_qos_constraints *c, struct plist_node *node,
 	curr_value = pm_qos_get_value(c);
 	cpumask_clear(&cpus);
 	pm_qos_set_value(c, curr_value);
-	pm_qos_set_value_for_cpus(c, &cpus);
+	ret = pm_qos_set_value_for_cpus(c, &cpus);
 
 	spin_unlock_irqrestore(&pm_qos_lock, flags);
 
@@ -497,7 +597,8 @@ int pm_qos_update_target(struct pm_qos_constraints *c, struct plist_node *node,
 	 * to update the new qos restriction for the cores
 	 */
 
-	if (!cpumask_empty(&cpus)) {
+	if (!cpumask_empty(&cpus) ||
+	   (ret && prev_value != curr_value)) {
 		ret = 1;
 		if (c->notifiers)
 			blocking_notifier_call_chain(c->notifiers,

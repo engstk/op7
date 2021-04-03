@@ -104,6 +104,9 @@ extern int core_uses_pid;
 extern char core_pattern[];
 extern unsigned int core_pipe_limit;
 #endif
+#ifdef CONFIG_DIRECT_SWAPPINESS
+extern int vm_direct_swapiness;
+#endif
 extern int pid_max;
 extern int extra_free_kbytes;
 extern int pid_max_min, pid_max_max;
@@ -132,12 +135,18 @@ static unsigned long one_ul = 1;
 static unsigned long long_max = LONG_MAX;
 static int one_hundred = 100;
 static int one_thousand = 1000;
+#ifdef CONFIG_DIRECT_SWAPPINESS
+static int two_hundred = 200;
+#endif
 #ifdef CONFIG_SCHED_WALT
 static int two_million = 2000000;
 #endif
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 unsigned int sysctl_fg_io_opt = 1;
+
+unsigned int sysctl_ext4_fsync_enable = 1;
+unsigned int ext4_fsync_enable_status;
+unsigned long sysctl_blkdev_issue_flush_count;
 
 #ifdef CONFIG_PRINTK
 static int ten_thousand = 10000;
@@ -309,6 +318,10 @@ static int max_sched_tunable_scaling = SCHED_TUNABLESCALING_END-1;
 #endif /* CONFIG_SMP */
 #endif /* CONFIG_SCHED_DEBUG */
 
+#ifdef CONFIG_UXCHAIN
+int sysctl_uxchain_enabled = 1;
+int sysctl_launcher_boost_enabled;
+#endif
 #ifdef CONFIG_COMPACTION
 static int min_extfrag_threshold;
 static int max_extfrag_threshold = 1000;
@@ -331,7 +344,8 @@ static struct ctl_table kern_table[] = {
 		.proc_handler   = proc_dointvec,
 	},
 #endif
-#if defined(CONFIG_IRQSOFF_TRACER) && defined(CONFIG_PREEMPTIRQ_EVENTS)
+#if defined(CONFIG_IRQSOFF_TRACER) && defined(CONFIG_PREEMPTIRQ_EVENTS) && \
+		!defined(CONFIG_PROVE_LOCKING)
 	{
 		.procname       = "irqsoff_tracing_threshold_ns",
 		.data           = &sysctl_irqsoff_tracing_threshold_ns,
@@ -373,6 +387,24 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= sched_boost_handler,
 		.extra1		= &neg_three,
 		.extra2		= &three,
+	},
+	{
+		.procname	= "sched_conservative_pl",
+		.data		= &sysctl_sched_conservative_pl,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "sched_many_wakeup_threshold",
+		.data		= &sysctl_sched_many_wakeup_threshold,
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &two,
+		.extra2		= &one_thousand,
 	},
 	{
 		.procname	= "sched_walt_rotate_big_tasks",
@@ -418,7 +450,6 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= sched_updown_migrate_handler,
 	},
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 {
 		.procname	= "fg_io_opt",
 		.data		= &sysctl_fg_io_opt,
@@ -426,6 +457,20 @@ static struct ctl_table kern_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
 },
+	{
+		.procname       = "ext4_fsync_enable",
+		.data           = &sysctl_ext4_fsync_enable,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0666,
+		.proc_handler   = proc_dointvec,
+	},
+	{
+		.procname       = "blkdev_issue_flush_count",
+		.data           = &sysctl_blkdev_issue_flush_count,
+		.maxlen         = sizeof(unsigned long),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec,
+	},
 	{
 		.procname	= "sched_downmigrate",
 		.data		= &sysctl_sched_capacity_margin_down,
@@ -1397,6 +1442,22 @@ static struct ctl_table kern_table[] = {
 		.proc_handler	= proc_dointvec,
 	},
 #endif
+#ifdef CONFIG_UXCHAIN
+	{
+		.procname	= "uxchain_enabled",
+		.data		= &sysctl_uxchain_enabled,
+		.maxlen = sizeof(int),
+		.mode		= 0666,
+		.proc_handler = proc_dointvec,
+	},
+	{
+		.procname	= "launcher_boost_enabled",
+		.data		= &sysctl_launcher_boost_enabled,
+		.maxlen = sizeof(int),
+		.mode		= 0666,
+		.proc_handler = proc_dointvec,
+	},
+#endif
 	{ }
 };
 
@@ -1531,8 +1592,23 @@ static struct ctl_table vm_table[] = {
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
+#ifdef CONFIG_DIRECT_SWAPPINESS
+		.extra2		= &two_hundred,
+#else
 		.extra2		= &one_hundred,
+#endif
 	},
+#ifdef CONFIG_DIRECT_SWAPPINESS
+	{
+		.procname	= "direct_swappiness",
+		.data		= &vm_direct_swapiness,
+		.maxlen		= sizeof(vm_direct_swapiness),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &two_hundred,
+	},
+#endif
 	{
 		.procname	= "breath_period",
 		.data		= &vm_breath_period,
@@ -1607,7 +1683,7 @@ static struct ctl_table vm_table[] = {
 		.procname	= "drop_caches",
 		.data		= &sysctl_drop_caches,
 		.maxlen		= sizeof(int),
-		.mode		= 0644,
+		.mode		= 0200,
 		.proc_handler	= drop_caches_sysctl_handler,
 		.extra1		= &one,
 		.extra2		= &four,
@@ -2984,8 +3060,10 @@ static int __do_proc_doulongvec_minmax(void *data, struct ctl_table *table, int 
 			if (neg)
 				continue;
 			val = convmul * val / convdiv;
-			if ((min && val < *min) || (max && val > *max))
-				continue;
+			if ((min && val < *min) || (max && val > *max)) {
+				err = -EINVAL;
+				break;
+			}
 			*i = val;
 		} else {
 			val = convdiv * (*i) / convmul;

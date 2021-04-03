@@ -18,12 +18,14 @@
 #include <linux/rcupdate_wait.h>
 
 #include <linux/blkdev.h>
+#include <linux/kcov.h>
 #include <linux/kprobes.h>
 #include <linux/mmu_context.h>
 #include <linux/module.h>
 #include <linux/nmi.h>
 #include <linux/prefetch.h>
 #include <linux/profile.h>
+#include <linux/scs.h>
 #include <linux/security.h>
 #include <linux/syscalls.h>
 #include <linux/irq.h>
@@ -46,8 +48,17 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_HOUSTON
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+#include <linux/oem/oneplus_healthinfo.h>
+#endif
+
+#ifdef CONFIG_HOUSTON
 #include <oneplus/houston/houston_helper.h>
+#endif
+
+#ifdef CONFIG_IM
+#include <linux/oem/im.h>
+#endif
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 
@@ -441,10 +452,11 @@ void wake_q_add(struct wake_q_head *head, struct task_struct *task)
 	 * its already queued (either by us or someone else) and will get the
 	 * wakeup due to that.
 	 *
-	 * This cmpxchg() implies a full barrier, which pairs with the write
-	 * barrier implied by the wakeup in wake_up_q().
+	 * In order to ensure that a pending wakeup will observe our pending
+	 * state, even in the failed case, an explicit smp_mb() must be used.
 	 */
-	if (cmpxchg(&node->next, NULL, WAKE_Q_TAIL))
+	smp_mb__before_atomic();
+	if (cmpxchg_relaxed(&node->next, NULL, WAKE_Q_TAIL))
 		return;
 
 	head->count++;
@@ -816,6 +828,11 @@ void deactivate_task(struct rq *rq, struct task_struct *p, int flags)
 		clear_ed_task(p, rq);
 
 	dequeue_task(rq, p, flags);
+
+#if defined(CONFIG_CONTROL_CENTER) && defined(CONFIG_IM)
+		if (unlikely(im_ux(p)))
+			restore_user_nice_safe(p);
+#endif
 }
 
 /*
@@ -901,11 +918,16 @@ void check_preempt_curr(struct rq *rq, struct task_struct *p, int flags)
 {
 	const struct sched_class *class;
 
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-	if (main_preempt_disable && rq->curr->main_boost_switch == 1 &&
-		rq->curr->group_leader == rq->curr &&
-		memcmp(p->comm, "kworker", 7) && !task_has_rt_policy(p))
+#ifdef CONFIG_UXCHAIN
+	u64 wallclock = sched_ktime_clock();
+
+	if (sysctl_uxchain_enabled &&
+		(sysctl_launcher_boost_enabled ||
+		wallclock - rq->curr->oncpu_time < PREEMPT_DISABLE_NS) &&
+		(rq->curr->static_ux || rq->curr->dynamic_ux) &&
+		!(p->flags & PF_WQ_WORKER) && !task_has_rt_policy(p))
 		return;
+#endif
 	if (p->sched_class == rq->curr->sched_class) {
 		rq->curr->sched_class->check_preempt_curr(rq, p, flags);
 	} else {
@@ -2130,11 +2152,6 @@ try_to_wake_up(struct task_struct *p, unsigned int state, int wake_flags,
 	if (p->on_rq && ttwu_remote(p, wake_flags))
 		goto stat;
 
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-	if (main_preempt_disable && current->main_boost_switch == 1 &&
-		current->group_leader == current)
-		p->main_wake_boost = 1;
-
 #ifdef CONFIG_SMP
 	/*
 	 * Ensure we load p->on_cpu _after_ p->on_rq, otherwise it would be
@@ -2306,6 +2323,9 @@ static void __sched_fork(unsigned long clone_flags, struct task_struct *p)
 	p->se.nr_migrations		= 0;
 	p->se.vruntime			= 0;
 	p->last_sleep_ts		= 0;
+	p->boost                = 0;
+	p->boost_expires        = 0;
+	p->boost_period         = 0;
 
 	INIT_LIST_HEAD(&p->se.group_node);
 
@@ -2500,10 +2520,16 @@ int sched_fork(unsigned long clone_flags, struct task_struct *p)
 		if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
 			p->policy = SCHED_NORMAL;
 			p->static_prio = NICE_TO_PRIO(0);
+#ifdef CONFIG_CONTROL_CENTER
+			p->cached_prio = p->static_prio;
+#endif
 			p->rt_priority = 0;
 		} else if (PRIO_TO_NICE(p->static_prio) < 0)
+#ifdef CONFIG_CONTROL_CENTER
+			p->cached_prio = p->static_prio = NICE_TO_PRIO(0);
+#else
 			p->static_prio = NICE_TO_PRIO(0);
-
+#endif
 		p->prio = p->normal_prio = __normal_prio(p);
 		set_load_weight(p);
 
@@ -2591,10 +2617,6 @@ void wake_up_new_task(struct task_struct *p)
 	raw_spin_lock_irqsave(&p->pi_lock, rf.flags);
 
 	p->state = TASK_RUNNING;
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-	if (main_preempt_disable && current->main_boost_switch == 1 &&
-		current->group_leader == current)
-		p->main_wake_boost = 1;
 
 #ifdef CONFIG_SMP
 	/*
@@ -2735,6 +2757,7 @@ static inline void
 prepare_task_switch(struct rq *rq, struct task_struct *prev,
 		    struct task_struct *next)
 {
+	kcov_prepare_switch(prev);
 	sched_info_switch(rq, prev, next);
 	perf_event_task_sched_out(prev, next);
 	fire_sched_out_preempt_notifiers(prev, next);
@@ -2812,6 +2835,7 @@ static struct rq *finish_task_switch(struct task_struct *prev)
 	smp_mb__after_unlock_lock();
 	finish_lock_switch(rq, prev);
 	finish_arch_post_lock_switch();
+	kcov_finish_switch(current);
 
 	fire_sched_in_preempt_notifiers(current);
 	if (mm)
@@ -3588,11 +3612,19 @@ static void __sched notrace __schedule(bool preempt)
 		 */
 		++*switch_count;
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+		if (prev->sched_class == &rt_sched_class && ohm_rtinfo_ctrl == true)
+			rt_thresh_times_record(prev, cpu);
+#endif
+#ifdef CONFIG_UXCHAIN
+		prev->oncpu_time = 0;
+		next->oncpu_time = wallclock;
+#endif
 		trace_sched_switch(preempt, prev, next);
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_HOUSTON
+#ifdef CONFIG_HOUSTON
 		ht_sched_switch_update(prev, next);
-
+#endif
 		/* Also unlocks the rq: */
 		rq = context_switch(rq, prev, next, &rf);
 	} else {
@@ -3945,7 +3977,8 @@ void rt_mutex_setprio(struct task_struct *p, struct task_struct *pi_task)
 	 */
 	if (dl_prio(prio)) {
 		if (!dl_prio(p->normal_prio) ||
-		    (pi_task && dl_entity_preempt(&pi_task->dl, &p->dl))) {
+		    (pi_task && dl_prio(pi_task->prio) &&
+		     dl_entity_preempt(&pi_task->dl, &p->dl))) {
 			p->dl.dl_boosted = 1;
 			queue_flag |= ENQUEUE_REPLENISH;
 		} else
@@ -3988,7 +4021,34 @@ static inline int rt_effective_prio(struct task_struct *p, int prio)
 }
 #endif
 
-void set_user_nice(struct task_struct *p, long nice)
+#ifdef CONFIG_CONTROL_CENTER
+void restore_user_nice_safe(struct task_struct *p)
+{
+	long nice = PRIO_TO_NICE(p->cached_prio);
+
+	if (rt_prio(p->prio))
+		return;
+
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
+		return;
+
+	if (task_on_rq_queued(p))
+		return;
+
+	if (task_current(task_rq(p), p))
+		return;
+
+	if (!time_after64(get_jiffies_64(), p->nice_effect_ts))
+		return;
+
+	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p);
+	p->prio = effective_prio(p);
+
+	p->nice_effect_ts = ULLONG_MAX;
+}
+
+void set_user_nice_no_cache(struct task_struct *p, long nice)
 {
 	bool queued, running;
 	int old_prio, delta;
@@ -3997,6 +4057,7 @@ void set_user_nice(struct task_struct *p, long nice)
 
 	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
 		return;
+
 	/*
 	 * We have to be careful, if called from sys_setpriority(),
 	 * the task might be in the middle of scheduling on another CPU.
@@ -4022,6 +4083,67 @@ void set_user_nice(struct task_struct *p, long nice)
 		put_prev_task(rq, p);
 
 	p->static_prio = NICE_TO_PRIO(nice);
+	set_load_weight(p);
+	old_prio = p->prio;
+	p->prio = effective_prio(p);
+	delta = p->prio - old_prio;
+
+	if (queued) {
+		enqueue_task(rq, p, ENQUEUE_RESTORE | ENQUEUE_NOCLOCK);
+		if (delta < 0 || (delta > 0 && task_running(rq, p)))
+			resched_curr(rq);
+	}
+	if (running)
+		set_curr_task(rq, p);
+out_unlock:
+	task_rq_unlock(rq, p, &rf);
+}
+EXPORT_SYMBOL(set_user_nice_no_cache);
+#endif
+
+void set_user_nice(struct task_struct *p, long nice)
+{
+	bool queued, running;
+	int old_prio, delta;
+	struct rq_flags rf;
+	struct rq *rq;
+
+#ifdef CONFIG_CONTROL_CENTER
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE) {
+		p->cached_prio = p->static_prio;
+		return;
+	}
+#else
+	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
+		return;
+#endif
+
+	/*
+	 * We have to be careful, if called from sys_setpriority(),
+	 * the task might be in the middle of scheduling on another CPU.
+	 */
+	rq = task_rq_lock(p, &rf);
+	update_rq_clock(rq);
+
+
+	if (task_has_dl_policy(p) || task_has_rt_policy(p)) {
+		p->static_prio = NICE_TO_PRIO(nice);
+#ifdef CONFIG_CONTROL_CENTER
+		p->cached_prio = p->static_prio;
+#endif
+		goto out_unlock;
+	}
+	queued = task_on_rq_queued(p);
+	running = task_current(rq, p);
+	if (queued)
+		dequeue_task(rq, p, DEQUEUE_SAVE | DEQUEUE_NOCLOCK);
+	if (running)
+		put_prev_task(rq, p);
+
+	p->static_prio = NICE_TO_PRIO(nice);
+#ifdef CONFIG_CONTROL_CENTER
+	p->cached_prio = p->static_prio;
+#endif
 	set_load_weight(p);
 	old_prio = p->prio;
 	p->prio = effective_prio(p);
@@ -4170,7 +4292,12 @@ static void __setscheduler_params(struct task_struct *p,
 	if (dl_policy(policy))
 		__setparam_dl(p, attr);
 	else if (fair_policy(policy))
+#ifdef CONFIG_CONTROL_CENTER
+		p->cached_prio =
+			p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+#else
 		p->static_prio = NICE_TO_PRIO(attr->sched_nice);
+#endif
 
 	/*
 	 * __sched_setscheduler() ensures attr->sched_priority == 0 when
@@ -4936,8 +5063,10 @@ unsigned int sched_lib_mask_force;
 bool is_sched_lib_based_app(pid_t pid)
 {
 	const char *name = NULL;
+	char *libname, *lib_list;
 	struct vm_area_struct *vma;
 	char path_buf[LIB_PATH_LENGTH];
+	char *tmp_lib_name;
 	bool found = false;
 	struct task_struct *p;
 	struct mm_struct *mm;
@@ -4945,11 +5074,16 @@ bool is_sched_lib_based_app(pid_t pid)
 	if (strnlen(sched_lib_name, LIB_PATH_LENGTH) == 0)
 		return false;
 
+	tmp_lib_name = kmalloc(LIB_PATH_LENGTH, GFP_KERNEL);
+	if (!tmp_lib_name)
+		return false;
+
 	rcu_read_lock();
 
 	p = find_process_by_pid(pid);
 	if (!p) {
 		rcu_read_unlock();
+		kfree(tmp_lib_name);
 		return false;
 	}
 
@@ -4969,10 +5103,15 @@ bool is_sched_lib_based_app(pid_t pid)
 			if (IS_ERR(name))
 				goto release_sem;
 
-			if (strnstr(name, sched_lib_name,
+			strlcpy(tmp_lib_name, sched_lib_name, LIB_PATH_LENGTH);
+			lib_list = tmp_lib_name;
+			while ((libname = strsep(&lib_list, ","))) {
+				libname = skip_spaces(libname);
+				if (strnstr(name, libname,
 					strnlen(name, LIB_PATH_LENGTH))) {
-				found = true;
-				break;
+					found = true;
+					goto release_sem;
+				}
 			}
 		}
 	}
@@ -4982,6 +5121,7 @@ release_sem:
 	mmput(mm);
 put_task_struct:
 	put_task_struct(p);
+	kfree(tmp_lib_name);
 	return found;
 }
 
@@ -5312,7 +5452,7 @@ long __sched io_schedule_timeout(long timeout)
 }
 EXPORT_SYMBOL(io_schedule_timeout);
 
-void io_schedule(void)
+void __sched io_schedule(void)
 {
 	int token;
 
@@ -5536,6 +5676,7 @@ void init_idle(struct task_struct *idle, int cpu)
 	idle->se.exec_start = sched_clock();
 	idle->flags |= PF_IDLE;
 
+	scs_task_reset(idle);
 	kasan_unpoison_task_stack(idle);
 
 #ifdef CONFIG_SMP
@@ -7092,10 +7233,6 @@ static int cpu_cgroup_can_attach(struct cgroup_taskset *tset)
 #ifdef CONFIG_RT_GROUP_SCHED
 		if (!sched_rt_can_attach(css_tg(css), task))
 			return -EINVAL;
-#else
-		/* We don't support RT-tasks being in separate groups */
-		if (task->sched_class != &fair_sched_class)
-			return -EINVAL;
 #endif
 		/*
 		 * Serialize against wake_up_new_task() such that if its
@@ -7130,6 +7267,8 @@ static void cpu_cgroup_attach(struct cgroup_taskset *tset)
 static int cpu_shares_write_u64(struct cgroup_subsys_state *css,
 				struct cftype *cftype, u64 shareval)
 {
+	if (shareval > scale_load_down(ULONG_MAX))
+		shareval = MAX_SHARES;
 	return sched_group_set_shares(css_tg(css), scale_load(shareval));
 }
 
@@ -7232,8 +7371,10 @@ int tg_set_cfs_quota(struct task_group *tg, long cfs_quota_us)
 	period = ktime_to_ns(tg->cfs_bandwidth.period);
 	if (cfs_quota_us < 0)
 		quota = RUNTIME_INF;
-	else
+	else if ((u64)cfs_quota_us <= U64_MAX / NSEC_PER_USEC)
 		quota = (u64)cfs_quota_us * NSEC_PER_USEC;
+	else
+		return -EINVAL;
 
 	return tg_set_cfs_bandwidth(tg, period, quota);
 }
@@ -7254,6 +7395,9 @@ long tg_get_cfs_quota(struct task_group *tg)
 int tg_set_cfs_period(struct task_group *tg, long cfs_period_us)
 {
 	u64 quota, period;
+
+	if ((u64)cfs_period_us > U64_MAX / NSEC_PER_USEC)
+		return -EINVAL;
 
 	period = (u64)cfs_period_us * NSEC_PER_USEC;
 	quota = tg->cfs_bandwidth.quota;
@@ -7512,6 +7656,26 @@ const u32 sched_prio_to_wmult[40] = {
  /*  10 */  39045157,  49367440,  61356676,  76695844,  95443717,
  /*  15 */ 119304647, 148102320, 186737708, 238609294, 286331153,
 };
+
+/*
+ *@boost:should be 0,1,2.
+ *@period:boost time based on ms units.
+ */
+int set_task_boost(int boost, u64 period)
+{
+	if (boost < 0 || boost > 2)
+		return -EINVAL;
+	if (boost) {
+		current->boost = boost;
+		current->boost_period = (u64)period * 1000 * 1000;
+		current->boost_expires = sched_clock() + current->boost_period;
+	} else {
+		current->boost = 0;
+		current->boost_expires = 0;
+		current->boost_period = 0;
+	}
+	return 0;
+}
 
 #ifdef CONFIG_SCHED_WALT
 /*

@@ -1,4 +1,4 @@
-/* Copyright (c) 2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -11,6 +11,7 @@
  */
 
 #include <linux/ethtool.h>
+#include <linux/rtnetlink.h>
 
 #include "ipa_eth_i.h"
 
@@ -53,8 +54,11 @@ int ipa_eth_pm_register(struct ipa_eth_device *eth_dev)
 	pm_params.skip_clk_vote = false;
 
 	rc = ipa_pm_register(&pm_params, &eth_dev->pm_handle);
-	if (rc)
+	if (rc) {
+		ipa_eth_dev_err(eth_dev, "Failed to register with IPA PM");
+
 		eth_dev->pm_handle = IPA_PM_MAX_CLIENTS;
+	}
 
 	return rc;
 }
@@ -73,7 +77,9 @@ int ipa_eth_pm_unregister(struct ipa_eth_device *eth_dev)
 		return 0;
 
 	rc = ipa_pm_deregister(eth_dev->pm_handle);
-	if (!rc)
+	if (rc)
+		ipa_eth_dev_err(eth_dev, "Failed to deregister from IPA PM");
+	else
 		eth_dev->pm_handle = IPA_PM_MAX_CLIENTS;
 
 	return rc;
@@ -100,7 +106,10 @@ static u32 __fetch_ethtool_link_speed(struct ipa_eth_device *eth_dev)
 	int rc;
 	struct ethtool_link_ksettings link_ksettings;
 
+	rtnl_lock();
 	rc = __ethtool_get_link_ksettings(eth_dev->net_dev, &link_ksettings);
+	rtnl_unlock();
+
 	if (rc) {
 		ipa_eth_dev_err(eth_dev,
 			"Failed to obtain link settings via ethtool");

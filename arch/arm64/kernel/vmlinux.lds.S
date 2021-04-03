@@ -161,7 +161,7 @@ SECTIONS
 		__alt_instructions_end = .;
 	}
 	.altinstr_replacement : {
-		KEEP(*(.altinstr_replacement))
+		*(.altinstr_replacement)
 	}
 
 	. = ALIGN(PAGE_SIZE);
@@ -189,6 +189,15 @@ SECTIONS
 
 	__rela_offset	= ABSOLUTE(ADDR(.rela.dyn) - KIMAGE_VADDR);
 	__rela_size	= SIZEOF(.rela.dyn);
+
+#ifdef CONFIG_RELR
+	.relr.dyn : ALIGN(8) {
+		*(.relr.dyn)
+	}
+
+	__relr_offset	= ABSOLUTE(ADDR(.relr.dyn) - KIMAGE_VADDR);
+	__relr_size	= SIZEOF(.relr.dyn);
+#endif
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__initdata_end = .;

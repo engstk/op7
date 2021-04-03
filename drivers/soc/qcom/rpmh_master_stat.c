@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -25,6 +25,8 @@
 #include <linux/uaccess.h>
 #include <linux/soc/qcom/smem.h>
 #include <asm/arch_timer.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
 #include "rpmh_master_stat.h"
 
 #define UNIT_DIST 0x14
@@ -200,6 +202,68 @@ void msm_rpmh_master_stats_update(void)
 	msm_rpmh_apss_master_stats_update(profile_unit);
 }
 EXPORT_SYMBOL(msm_rpmh_master_stats_update);
+
+ssize_t master_stats_show(struct kobject *kobj,
+					  struct kobj_attribute *attr, char *buf)
+{
+	int i = 0;
+	size_t size = 0;
+	struct msm_rpmh_master_stats *record = NULL;
+	char stats_buf[1024];
+	uint64_t temp_accumulated_duration = 0;
+
+	mutex_lock(&rpmh_stats_mutex);
+
+	/* First Read APSS master stats */
+
+	temp_accumulated_duration = apss_master_stats.accumulated_duration;
+
+	if (apss_master_stats.last_entered > apss_master_stats.last_exited)
+		temp_accumulated_duration +=
+				(arch_counter_get_cntvct()
+				- apss_master_stats.last_entered);
+
+	snprintf(stats_buf, sizeof(stats_buf),
+			"APSS\n\tVersion:0x%x\n"
+			"\tSleep Count:0x%x\n"
+			"\tSleep Last Entered At:0x%llx\n"
+			"\tSleep Last Exited At:0x%llx\n"
+			"\tSleep Accumulated Duration:0x%llx\n\n",
+			apss_master_stats.version_id,
+			apss_master_stats.counts, apss_master_stats.last_entered,
+			apss_master_stats.last_exited, temp_accumulated_duration);
+	/*
+	 * Read SMEM data written by masters
+	 */
+
+	for (i = 0; i < ARRAY_SIZE(rpmh_masters); i++) {
+		record = (struct msm_rpmh_master_stats *) qcom_smem_get(
+					rpmh_masters[i].pid,
+					rpmh_masters[i].smem_id, &size);
+		if (!IS_ERR_OR_NULL(record)) {
+			temp_accumulated_duration = record->accumulated_duration;
+
+			if (record->last_entered > record->last_exited)
+				temp_accumulated_duration +=
+						(arch_counter_get_cntvct()
+						- record->last_entered);
+
+			snprintf(stats_buf + strlen(stats_buf), sizeof(stats_buf),
+					"%s\n\tVersion:0x%x\n"
+					"\tSleep Count:0x%x\n"
+					"\tSleep Last Entered At:0x%llx\n"
+					"\tSleep Last Exited At:0x%llx\n"
+					"\tSleep Accumulated Duration:0x%llx\n\n",
+					rpmh_masters[i].master_name, record->version_id,
+					record->counts, record->last_entered,
+					record->last_exited, temp_accumulated_duration);
+		}
+	}
+
+	mutex_unlock(&rpmh_stats_mutex);
+
+	return snprintf(buf, sizeof(stats_buf), "%s", stats_buf);
+}
 
 static int msm_rpmh_master_stats_probe(struct platform_device *pdev)
 {

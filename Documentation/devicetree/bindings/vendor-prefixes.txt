@@ -390,6 +390,4 @@ zidoo	Shenzhen Zidoo Technology Co., Ltd.
 zii	Zodiac Inflight Innovations
 zte	ZTE Corp.
 zyxel	ZyXEL Communications Corp.
-oneplus ONEPLUS Corp.
-oneplus,fpdetect oneplus Fingerprint
-goodix,fingerprint goodix Fingerprint
+inven   InvenSense, Inc.

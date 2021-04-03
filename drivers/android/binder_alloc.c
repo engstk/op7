@@ -33,6 +33,10 @@
 #include "binder_alloc.h"
 #include "binder_trace.h"
 #include <../coretech/uxcore/opchain_helper.h>
+#ifdef CONFIG_OP_FREEZER
+// add for op freeze manager
+#include <oneplus/op_freezer/op_freezer.h>
+#endif
 
 struct list_lru binder_alloc_lru;
 
@@ -220,6 +224,11 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 
 	if (mm) {
 		down_read(&mm->mmap_sem);
+		if (!mmget_still_valid(mm)) {
+			if (allocate == 0)
+				goto free_range;
+			goto err_no_vma;
+		}
 		vma = alloc->vma;
 	}
 
@@ -283,8 +292,7 @@ static int binder_update_page_range(struct binder_alloc *alloc, int allocate,
 	return 0;
 
 free_range:
-	for (page_addr = end - PAGE_SIZE; page_addr >= start;
-	     page_addr -= PAGE_SIZE) {
+	for (page_addr = end - PAGE_SIZE; 1; page_addr -= PAGE_SIZE) {
 		bool ret;
 		size_t index;
 
@@ -297,6 +305,8 @@ free_range:
 		WARN_ON(!ret);
 
 		trace_binder_free_lru_end(alloc, index);
+		if (page_addr == start)
+			break;
 		continue;
 
 err_vm_insert_page_failed:
@@ -304,7 +314,8 @@ err_vm_insert_page_failed:
 		page->page_ptr = NULL;
 err_alloc_page_failed:
 err_page_ptr_cleared:
-		;
+		if (page_addr == start)
+			break;
 	}
 err_no_vma:
 	if (mm) {
@@ -357,6 +368,10 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 	void __user *end_page_addr;
 	size_t size, data_offsets_size;
 	int ret;
+#ifdef CONFIG_OP_FREEZER
+	// add for op freeze manager
+		struct task_struct *p = NULL;
+#endif
 
 	if (!binder_alloc_get_vma(alloc)) {
 		pr_err("%d: binder_alloc_buf, no vma\n",
@@ -380,6 +395,23 @@ static struct binder_buffer *binder_alloc_new_buf_locked(
 				alloc->pid, extra_buffers_size);
 		return ERR_PTR(-EINVAL);
 	}
+
+#ifdef CONFIG_OP_FREEZER
+	// add for op freeze manager
+		if (is_async
+			&& (alloc->free_async_space < 3 * (size + sizeof(struct binder_buffer))
+			|| (alloc->free_async_space < ((alloc->buffer_size / 2) * 9 / 10)))) {
+			rcu_read_lock();
+			p = find_task_by_vpid(alloc->pid);
+			rcu_read_unlock();
+			if (p != NULL && is_frozen_tg(p)) {
+				op_freezer_report(ASYNC_BINDER,
+						task_tgid_nr(current), task_uid(p).val,
+						"free_buffer_full", -1);
+			}
+		}
+#endif
+
 	if (is_async &&
 	    alloc->free_async_space < size + sizeof(struct binder_buffer)) {
 		binder_alloc_debug(BINDER_DEBUG_BUFFER_ALLOC,
@@ -921,8 +953,8 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	mm = alloc->vma_vm_mm;
 	if (!mmget_not_zero(mm))
 		goto err_mmget;
-	if (!down_write_trylock(&mm->mmap_sem))
-		goto err_down_write_mmap_sem_failed;
+	if (!down_read_trylock(&mm->mmap_sem))
+		goto err_down_read_mmap_sem_failed;
 	vma = binder_alloc_get_vma(alloc);
 
 	list_lru_isolate(lru, item);
@@ -935,8 +967,8 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 
 		trace_binder_unmap_user_end(alloc, index);
 	}
-	up_write(&mm->mmap_sem);
-	mmput(mm);
+	up_read(&mm->mmap_sem);
+	mmput_async(mm);
 
 	trace_binder_unmap_kernel_start(alloc, index);
 
@@ -949,7 +981,7 @@ enum lru_status binder_alloc_free_page(struct list_head *item,
 	mutex_unlock(&alloc->mutex);
 	return LRU_REMOVED_RETRY;
 
-err_down_write_mmap_sem_failed:
+err_down_read_mmap_sem_failed:
 	mmput_async(mm);
 err_mmget:
 err_page_already_freed:

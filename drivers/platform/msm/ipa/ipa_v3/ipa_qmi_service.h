@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -220,6 +220,7 @@ extern struct qmi_elem_info ipa_add_offload_connection_req_msg_v01_ei[];
 extern struct qmi_elem_info ipa_add_offload_connection_resp_msg_v01_ei[];
 extern struct qmi_elem_info ipa_remove_offload_connection_req_msg_v01_ei[];
 extern struct qmi_elem_info ipa_remove_offload_connection_resp_msg_v01_ei[];
+extern struct qmi_elem_info ipa_bw_change_ind_msg_v01_ei[];
 
 /**
  * struct ipa3_rmnet_context - IPA rmnet context
@@ -328,6 +329,8 @@ int ipa3_qmi_set_data_quota(struct ipa_set_data_usage_quota_req_msg_v01 *req);
 int ipa3_qmi_set_aggr_info(
 	enum ipa_aggr_enum_type_v01 aggr_enum_type);
 
+int ipa3_qmi_req_ind(void);
+
 int ipa3_qmi_stop_data_qouta(void);
 
 void ipa3_q6_handshake_complete(bool ssr_bootup);
@@ -345,6 +348,9 @@ int ipa3_qmi_get_per_client_packet_stats(
 
 int ipa3_qmi_send_mhi_ready_indication(
 	struct ipa_mhi_ready_indication_msg_v01 *req);
+
+int ipa3_qmi_send_endp_desc_indication(
+	struct ipa_endp_desc_indication_msg_v01 *req);
 
 int ipa3_qmi_send_mhi_cleanup_request(struct ipa_mhi_cleanup_req_msg_v01 *req);
 
@@ -375,7 +381,7 @@ static inline int ipa3_qmi_add_offload_request_send(
 }
 
 static inline int ipa3_qmi_rmv_offload_request_send(
-	struct ipa_rmv_offload_connection_req_msg_v01 *req)
+	struct ipa_remove_offload_connection_req_msg_v01 *req)
 {
 	return -EPERM;
 }
@@ -484,6 +490,12 @@ static inline void ipa3_q6_handshake_complete(bool ssr_bootup) { }
 
 static inline int ipa3_qmi_send_mhi_ready_indication(
 	struct ipa_mhi_ready_indication_msg_v01 *req)
+{
+	return -EPERM;
+}
+
+static inline int ipa3_qmi_send_endp_desc_indication(
+	struct ipa_endp_desc_indication_msg_v01 *req)
 {
 	return -EPERM;
 }

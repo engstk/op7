@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014, 2016-2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, 2016-2020 The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,9 +23,23 @@
 #define RMNET_MAX_VEID 4
 
 struct rmnet_endpoint {
-	u8 mux_id;
+	union {
+		u8 mux_id;
+		__be32 ifa_address;
+		struct in6_addr in6addr;
+	};
 	struct net_device *egress_dev;
 	struct hlist_node hlnode;
+};
+
+struct rmnet_agg_stats {
+	u64 ul_agg_reuse;
+	u64 ul_agg_alloc;
+};
+
+struct rmnet_ip_route_endpoint {
+	struct in6_addr addr;
+	struct net_device *egress_dev;
 };
 
 struct rmnet_port_priv_stats {
@@ -41,12 +55,19 @@ struct rmnet_port_priv_stats {
 	u64 dl_hdr_total_pkts;
 	u64 dl_trl_last_seq;
 	u64 dl_trl_count;
+	struct rmnet_agg_stats agg;
 };
 
 struct rmnet_egress_agg_params {
 	u16 agg_size;
-	u16 agg_count;
+	u8 agg_count;
+	u8 agg_features;
 	u32 agg_time;
+};
+
+struct rmnet_agg_page {
+	struct list_head list;
+	struct page *page;
 };
 
 /* One instance of this structure is instantiated for each real_dev associated
@@ -73,6 +94,9 @@ struct rmnet_port {
 	struct timespec agg_last;
 	struct hrtimer hrtimer;
 	struct work_struct agg_wq;
+	u8 agg_size_order;
+	struct list_head agg_list;
+	struct rmnet_agg_page *agg_head;
 
 	void *qmi_info;
 
@@ -124,6 +148,10 @@ struct rmnet_coal_stats {
 	u64 coal_trans_invalid;
 	struct rmnet_coal_close_stats close;
 	u64 coal_veid[RMNET_MAX_VEID];
+	u64 coal_tcp;
+	u64 coal_tcp_bytes;
+	u64 coal_udp;
+	u64 coal_udp_bytes;
 };
 
 struct rmnet_priv_stats {
@@ -138,6 +166,7 @@ struct rmnet_priv_stats {
 	u64 csum_sw;
 	u64 csum_hw;
 	struct rmnet_coal_stats coal;
+	u64 ul_prio;
 };
 
 struct rmnet_priv {
@@ -176,4 +205,9 @@ int rmnet_add_bridge(struct net_device *rmnet_dev,
 		     struct net_device *slave_dev);
 int rmnet_del_bridge(struct net_device *rmnet_dev,
 		     struct net_device *slave_dev);
+
+struct rmnet_endpoint *rmnet_get_ip6_route_endpoint(struct rmnet_port *port,
+						    struct in6_addr *addr);
+struct rmnet_endpoint *rmnet_get_ip4_route_endpoint(struct rmnet_port *port,
+						    __be32 *ifa_address);
 #endif /* _RMNET_CONFIG_H_ */

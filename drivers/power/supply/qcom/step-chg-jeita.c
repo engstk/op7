@@ -312,7 +312,7 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 		chip->step_chg_config->param.psy_prop =
 				POWER_SUPPLY_PROP_VOLTAGE_OCV;
 		chip->step_chg_config->param.prop_name = "OCV";
-		chip->step_chg_config->param.hysteresis = 10000;
+		chip->step_chg_config->param.hysteresis = 0;
 		chip->step_chg_config->param.use_bms = true;
 	}
 
@@ -849,7 +849,7 @@ int qcom_step_chg_init(struct device *dev,
 	if (!chip)
 		return -ENOMEM;
 
-	chip->step_chg_ws = wakeup_source_register("qcom-step-chg");
+	chip->step_chg_ws = wakeup_source_register(dev, "qcom-step-chg");
 	if (!chip->step_chg_ws)
 		return -EINVAL;
 

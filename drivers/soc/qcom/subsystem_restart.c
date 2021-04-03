@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -298,6 +298,8 @@ static ssize_t restart_level_store(struct device *dev,
 
 	for (i = 0; i < ARRAY_SIZE(restart_levels); i++)
 		if (!strncasecmp(buf, restart_levels[i], count)) {
+			pil_ipc("[%s]: change restart level to %d\n",
+				subsys->desc->name, i);
 			subsys->restart_level = i;
 			return orig_count;
 		}
@@ -402,7 +404,7 @@ void subsys_default_online(struct subsys_device *dev)
 EXPORT_SYMBOL(subsys_default_online);
 
 
-static void subsys_send_uevent_notify(struct subsys_desc *desc,	int crash_count)
+void subsys_send_uevent_notify(struct subsys_desc *desc)
 {
 	char *envp[4];
 	struct subsys_device *dev;
@@ -415,7 +417,7 @@ static void subsys_send_uevent_notify(struct subsys_desc *desc,	int crash_count)
 		return;
 
 	envp[0] = kasprintf(GFP_KERNEL, "SUBSYSTEM=%s", desc->name);
-	envp[1] = kasprintf(GFP_KERNEL, "CRASHCOUNT=%d", crash_count);
+	envp[1] = kasprintf(GFP_KERNEL, "CRASHCOUNT=%d", dev->crash_count);
 	envp[2] = kasprintf(GFP_KERNEL, "CRASHREASON=%s", dev->crash_reason);
 	envp[3] = NULL;
 	kobject_uevent_env(&desc->dev->kobj, KOBJ_CHANGE, envp);
@@ -824,7 +826,9 @@ static int subsystem_shutdown(struct subsys_device *dev, void *data)
 	subsys_set_state(dev, SUBSYS_OFFLINE);
 	disable_all_irqs(dev);
 
-	subsys_send_uevent_notify(dev->desc, dev->crash_count);
+	// We send esoc0 uevent in mdm_get_restart_reason()
+	if (strcmp(name, "esoc0"))
+		subsys_send_uevent_notify(dev->desc);
 
 	return 0;
 }
@@ -856,6 +860,7 @@ static int subsystem_powerup(struct subsys_device *dev, void *data)
 	pr_info("[%s:%d]: Powering up %s\n", current->comm, current->pid, name);
 	reinit_completion(&dev->err_ready);
 
+	enable_all_irqs(dev);
 	ret = dev->desc->powerup(dev->desc);
 	if (ret < 0) {
 		notify_each_subsys_device(&dev, 1, SUBSYS_POWERUP_FAILURE,
@@ -871,7 +876,6 @@ static int subsystem_powerup(struct subsys_device *dev, void *data)
 			pr_err("Powerup failure on %s\n", name);
 		return ret;
 	}
-	enable_all_irqs(dev);
 
 	ret = wait_for_err_ready(dev);
 	if (ret) {
@@ -1123,7 +1127,7 @@ static int subsys_start(struct subsys_device *subsys)
 		subsys_set_state(subsys, SUBSYS_ONLINE);
 		return 0;
 	}
-
+	pil_ipc("[%s]: before wait_for_err_ready\n", subsys->desc->name);
 	ret = wait_for_err_ready(subsys);
 	if (ret) {
 		/* pil-boot succeeded but we need to shutdown
@@ -1139,6 +1143,7 @@ static int subsys_start(struct subsys_device *subsys)
 
 	notify_each_subsys_device(&subsys, 1, SUBSYS_AFTER_POWERUP,
 								NULL);
+	pil_ipc("[%s]: exit\n", subsys->desc->name);
 	return ret;
 }
 
@@ -1146,6 +1151,7 @@ static void subsys_stop(struct subsys_device *subsys)
 {
 	const char *name = subsys->desc->name;
 
+	pil_ipc("[%s]: entry\n", subsys->desc->name);
 	notify_each_subsys_device(&subsys, 1, SUBSYS_BEFORE_SHUTDOWN, NULL);
 	reinit_completion(&subsys->shutdown_ack);
 	if (!of_property_read_bool(subsys->desc->dev->of_node,
@@ -1164,6 +1170,7 @@ static void subsys_stop(struct subsys_device *subsys)
 	subsys_set_state(subsys, SUBSYS_OFFLINE);
 	disable_all_irqs(subsys);
 	notify_each_subsys_device(&subsys, 1, SUBSYS_AFTER_SHUTDOWN, NULL);
+	pil_ipc("[%s]: exit\n", subsys->desc->name);
 }
 
 int subsystem_set_fwname(const char *name, const char *fw_name)
@@ -1221,7 +1228,8 @@ void *__subsystem_get(const char *name, const char *fw_name)
 
 	if (!name)
 		return NULL;
-
+	if (fw_name && !strcmp(fw_name, "modem"))
+		msleep(3000);
 	subsys = retval = find_subsys_device(name);
 	if (!subsys)
 		return ERR_PTR(-ENODEV);
@@ -1971,7 +1979,7 @@ static int __get_smem_state(struct subsys_desc *desc, const char *prop,
 		desc->state = qcom_smem_state_get(desc->dev, prop, smem_bit);
 		if (IS_ERR_OR_NULL(desc->state)) {
 			pr_err("Could not get smem-states %s\n", prop);
-			return -ENXIO;
+			return PTR_ERR(desc->state);
 		}
 		return 0;
 	}
@@ -2277,6 +2285,7 @@ err_sysmon_notifier:
 	if (ofnode)
 		subsys_remove_restart_order(ofnode);
 err_register:
+	subsys_char_device_remove(subsys);
 	device_unregister(&subsys->dev);
 	return ERR_PTR(ret);
 }

@@ -604,13 +604,18 @@ struct main_board_info main_board_info_check[] = {
 	{2, 15, "DVT"},
 	{2, 21, "PVT"},
 	{2, 22, "MP"},
+	{2, 24, "USS EVT"},
+	{2, 25, "USS DVT"},
+	{2, 31, "USS PVT"},
 
 	{2, 42, "T0"},
 	{2, 43, "EVT1"},
 	{2, 44, "EVT2"},
-	{2, 45, "DVT"},
-	{2, 51, "PVT"},
-	{2, 52, "MP"},
+	{2, 45, "EVT2"},
+	{2, 51, "DVT1"},
+	{2, 52, "DVT2"},
+	{2, 53, "PVT"},
+	{2, 54, "MP"},
 
 	{2, 24, "Sprint EVT"},
 

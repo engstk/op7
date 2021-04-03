@@ -1,4 +1,4 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -581,7 +581,7 @@ static int sde_rotator_import_buffer(struct sde_layer_buffer *buffer,
 	return ret;
 }
 
-static int sde_rotator_secure_session_ctrl(bool enable)
+static int _sde_rotator_secure_session_ctrl(bool enable)
 {
 	struct sde_rot_data_type *mdata = sde_rot_get_mdata();
 	uint32_t *sid_info = NULL;
@@ -672,6 +672,39 @@ end:
 	return resp;
 }
 
+static int sde_rotator_secure_session_ctrl(bool enable)
+{
+	struct sde_rot_data_type *mdata = sde_rot_get_mdata();
+	int ret = -EINVAL;
+
+	/*
+	 * wait_for_transition and secure_session_control are filled by client
+	 * callback.
+	 */
+	if (mdata->wait_for_transition && mdata->secure_session_ctrl &&
+		mdata->callback_request) {
+		ret = mdata->wait_for_transition(mdata->sec_cam_en, enable);
+		if (ret) {
+			SDEROT_ERR("failed Secure wait for transition %d\n",
+				   ret);
+		} else {
+			if (mdata->sec_cam_en ^ enable) {
+				mdata->sec_cam_en = enable;
+				ret = mdata->secure_session_ctrl(enable);
+				if (ret)
+					mdata->sec_cam_en = 0;
+			}
+		}
+	} else if (!mdata->callback_request) {
+		ret = _sde_rotator_secure_session_ctrl(enable);
+	}
+
+	if (ret)
+		SDEROT_ERR("failed %d sde_rotator_secure_session %d\n",
+			   ret, mdata->callback_request);
+
+	return ret;
+}
 
 static int sde_rotator_map_and_check_data(struct sde_rot_entry *entry)
 {
@@ -3128,11 +3161,15 @@ int sde_rotator_core_init(struct sde_rot_mgr **pmgr,
 	} else if (IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
 			SDE_MDP_HW_REV_300) ||
 		IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+			SDE_MDP_HW_REV_320) ||
+		IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
 			SDE_MDP_HW_REV_400) ||
 		IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
 			SDE_MDP_HW_REV_410) ||
 		IS_SDE_MAJOR_SAME(mdata->mdss_version,
-			SDE_MDP_HW_REV_500)) {
+			SDE_MDP_HW_REV_500) ||
+		IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+			SDE_MDP_HW_REV_620)) {
 		mgr->ops_hw_init = sde_rotator_r3_init;
 		mgr->min_rot_clk = ROT_MIN_ROT_CLK;
 
@@ -3142,11 +3179,15 @@ int sde_rotator_core_init(struct sde_rot_mgr **pmgr,
 		 * ensure we do not cross the max allowed clock for rotator
 		 */
 		if (IS_SDE_MAJOR_SAME(mdata->mdss_version,
-			SDE_MDP_HW_REV_500))
+			SDE_MDP_HW_REV_500) ||
+			IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+			SDE_MDP_HW_REV_620))
 			mgr->max_rot_clk = ROT_R3_MAX_ROT_CLK;
 
-		if (!IS_SDE_MAJOR_SAME(mdata->mdss_version,
-					SDE_MDP_HW_REV_500) &&
+		if (!(IS_SDE_MAJOR_SAME(mdata->mdss_version,
+					SDE_MDP_HW_REV_500) ||
+			IS_SDE_MAJOR_MINOR_SAME(mdata->mdss_version,
+			SDE_MDP_HW_REV_620)) &&
 				!sde_rotator_get_clk(mgr,
 					SDE_ROTATOR_CLK_MDSS_AXI)) {
 			SDEROT_ERR("unable to get mdss_axi_clk\n");
@@ -3325,6 +3366,7 @@ int sde_rotator_runtime_idle(struct device *dev)
 int sde_rotator_pm_suspend(struct device *dev)
 {
 	struct sde_rot_mgr *mgr;
+	int i;
 
 	mgr = sde_rot_mgr_from_device(dev);
 
@@ -3339,8 +3381,20 @@ int sde_rotator_pm_suspend(struct device *dev)
 	sde_rotator_suspend_cancel_rot_work(mgr);
 	mgr->minimum_bw_vote = 0;
 	sde_rotator_update_perf(mgr);
+	mgr->pm_rot_enable_clk_cnt = mgr->rot_enable_clk_cnt;
+
+	if (mgr->pm_rot_enable_clk_cnt) {
+		for (i = 0; i < mgr->pm_rot_enable_clk_cnt; i++)
+			sde_rotator_clk_ctrl(mgr, false);
+
+		sde_rotator_update_clk(mgr);
+	}
+
 	ATRACE_END("pm_active");
-	SDEROT_DBG("end pm active %d\n", atomic_read(&mgr->device_suspended));
+	SDEROT_DBG("end pm active %d clk_cnt %d\n",
+	 atomic_read(&mgr->device_suspended), mgr->pm_rot_enable_clk_cnt);
+	SDEROT_EVTLOG(mgr->pm_rot_enable_clk_cnt,
+			 atomic_read(&mgr->device_suspended));
 	sde_rot_mgr_unlock(mgr);
 	return 0;
 }
@@ -3352,6 +3406,7 @@ int sde_rotator_pm_suspend(struct device *dev)
 int sde_rotator_pm_resume(struct device *dev)
 {
 	struct sde_rot_mgr *mgr;
+	int i;
 
 	mgr = sde_rot_mgr_from_device(dev);
 
@@ -3371,10 +3426,20 @@ int sde_rotator_pm_resume(struct device *dev)
 	pm_runtime_enable(dev);
 
 	sde_rot_mgr_lock(mgr);
-	SDEROT_DBG("begin pm active %d\n", atomic_read(&mgr->device_suspended));
+	SDEROT_DBG("begin pm active %d clk_cnt %d\n",
+	 atomic_read(&mgr->device_suspended), mgr->pm_rot_enable_clk_cnt);
 	ATRACE_BEGIN("pm_active");
+	SDEROT_EVTLOG(mgr->pm_rot_enable_clk_cnt,
+			 atomic_read(&mgr->device_suspended));
 	atomic_dec(&mgr->device_suspended);
 	sde_rotator_update_perf(mgr);
+
+	if (mgr->pm_rot_enable_clk_cnt) {
+		sde_rotator_update_clk(mgr);
+		for (i = 0; i < mgr->pm_rot_enable_clk_cnt; i++)
+			sde_rotator_clk_ctrl(mgr, true);
+	}
+
 	sde_rot_mgr_unlock(mgr);
 	return 0;
 }

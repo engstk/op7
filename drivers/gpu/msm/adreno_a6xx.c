@@ -1,4 +1,4 @@
-/* Copyright (c)2017-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c)2017-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -212,7 +212,7 @@ static const struct kgsl_hwcg_reg a615_hwcg_regs[] = {
 	{A6XX_RBBM_CLOCK_DELAY_UCHE, 0x00000002},
 	{A6XX_RBBM_CLOCK_CNTL_RB0, 0x22222222},
 	{A6XX_RBBM_CLOCK_CNTL2_RB0, 0x00002222},
-	{A6XX_RBBM_CLOCK_CNTL_CCU0, 0x00002220},
+	{A6XX_RBBM_CLOCK_CNTL_CCU0, 0x00002020},
 	{A6XX_RBBM_CLOCK_CNTL_CCU1, 0x00002220},
 	{A6XX_RBBM_CLOCK_CNTL_CCU2, 0x00002220},
 	{A6XX_RBBM_CLOCK_CNTL_CCU3, 0x00002220},
@@ -296,8 +296,8 @@ static const struct kgsl_hwcg_reg a640_hwcg_regs[] = {
 static const struct kgsl_hwcg_reg a612_hwcg_regs[] = {
 	{A6XX_RBBM_CLOCK_CNTL_SP0, 0x22222222},
 	{A6XX_RBBM_CLOCK_CNTL2_SP0, 0x02222220},
-	{A6XX_RBBM_CLOCK_DELAY_SP0, 0x0000F3CF},
-	{A6XX_RBBM_CLOCK_HYST_SP0, 0x00000081},
+	{A6XX_RBBM_CLOCK_DELAY_SP0, 0x00000081},
+	{A6XX_RBBM_CLOCK_HYST_SP0, 0x0000F3CF},
 	{A6XX_RBBM_CLOCK_CNTL_TP0, 0x22222222},
 	{A6XX_RBBM_CLOCK_CNTL2_TP0, 0x22222222},
 	{A6XX_RBBM_CLOCK_CNTL3_TP0, 0x22222222},
@@ -784,7 +784,7 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 {
 	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
 	struct gmu_dev_ops *gmu_dev_ops = GMU_DEVICE_OPS(device);
-	unsigned int bit, mal, mode, glbl_inv;
+	unsigned int bit, mal, mode, glbl_inv, channel;
 	unsigned int amsbc = 0;
 	static bool patch_reglist;
 
@@ -885,6 +885,10 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 		"qcom,ubwc-mode", &mode))
 		mode = 0;
 
+	if (of_property_read_u32(device->pdev->dev.of_node,
+		"qcom,macrotiling-channels", &channel))
+		channel = 0; /* unknown and keep reset value */
+
 	switch (mode) {
 	case KGSL_UBWC_1_0:
 		mode = 1;
@@ -899,6 +903,9 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 	default:
 		break;
 	}
+
+	if (channel == 8)
+		kgsl_regwrite(device, A6XX_RBBM_NC_MODE_CNTL, 1);
 
 	if (bit >= 13 && bit <= 16)
 		bit = (bit - 13) & 0x03;
@@ -1204,7 +1211,7 @@ static int a6xx_post_start(struct adreno_device *adreno_dev)
 
 	rb->_wptr = rb->_wptr - (42 - (cmds - start));
 
-	ret = adreno_ringbuffer_submit_spin(rb, NULL, 2000);
+	ret = adreno_ringbuffer_submit_spin_nosync(rb, NULL, 2000);
 	if (ret)
 		adreno_spin_idle_debug(adreno_dev,
 			"hw preemption initialization failed to idle\n");
@@ -1350,7 +1357,7 @@ static int _load_firmware(struct kgsl_device *device, const char *fwfile,
 	if (!ret) {
 		memcpy(firmware->memdesc.hostptr, &fw->data[4], fw->size - 4);
 		firmware->size = (fw->size - 4) / sizeof(uint32_t);
-		firmware->version = *(unsigned int *)&fw->data[4];
+		firmware->version = adreno_get_ucode_version((u32 *)fw->data);
 	}
 
 	release_firmware(fw);
@@ -1419,10 +1426,8 @@ static int a6xx_soft_reset(struct adreno_device *adreno_dev)
 	 * For the soft reset case with GMU enabled this part is done
 	 * by the GMU firmware
 	 */
-	if (gmu_core_gpmu_isenabled(device) &&
-		!test_bit(ADRENO_DEVICE_HARD_RESET, &adreno_dev->priv))
+	if (gmu_core_gpmu_isenabled(device))
 		return 0;
-
 
 	adreno_writereg(adreno_dev, ADRENO_REG_RBBM_SW_RESET_CMD, 1);
 	/*
@@ -1508,37 +1513,37 @@ static int a6xx_reset(struct kgsl_device *device, int fault)
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	int ret = -EINVAL;
 	int i = 0;
+	unsigned long flags = device->pwrctrl.ctrl_flags;
 
 	/* Use the regular reset sequence for No GMU */
 	if (!gmu_core_gpmu_isenabled(device))
 		return adreno_reset(device, fault);
 
+	/* Clear ctrl_flags to ensure clocks and regulators are turned off */
+	device->pwrctrl.ctrl_flags = 0;
+
 	/* Transition from ACTIVE to RESET state */
 	kgsl_pwrctrl_change_state(device, KGSL_STATE_RESET);
 
-	if (ret) {
-		/* If soft reset failed/skipped, then pull the power */
-		set_bit(ADRENO_DEVICE_HARD_RESET, &adreno_dev->priv);
-		/* since device is officially off now clear start bit */
-		clear_bit(ADRENO_DEVICE_STARTED, &adreno_dev->priv);
+	/* since device is officially off now clear start bit */
+	clear_bit(ADRENO_DEVICE_STARTED, &adreno_dev->priv);
 
-		/* Keep trying to start the device until it works */
-		for (i = 0; i < NUM_TIMES_RESET_RETRY; i++) {
-			ret = adreno_start(device, 0);
-			if (!ret)
-				break;
+	/* Keep trying to start the device until it works */
+	for (i = 0; i < NUM_TIMES_RESET_RETRY; i++) {
+		ret = adreno_start(device, 0);
+		if (!ret)
+			break;
 
-			msleep(20);
-		}
+		msleep(20);
 	}
-
-	clear_bit(ADRENO_DEVICE_HARD_RESET, &adreno_dev->priv);
 
 	if (ret)
 		return ret;
 
 	if (i != 0)
 		KGSL_DRV_WARN(device, "Device hard reset tried %d tries\n", i);
+
+	device->pwrctrl.ctrl_flags = flags;
 
 	/*
 	 * If active_cnt is non-zero then the system was active before
@@ -1763,6 +1768,29 @@ static void a6xx_cp_callback(struct adreno_device *adreno_dev, int bit)
 	adreno_dispatcher_schedule(device);
 }
 
+/*
+ * a6xx_gpc_err_int_callback() - Isr for GPC error interrupts
+ * @adreno_dev: Pointer to device
+ * @bit: Interrupt bit
+ */
+static void a6xx_gpc_err_int_callback(struct adreno_device *adreno_dev, int bit)
+{
+	struct kgsl_device *device = KGSL_DEVICE(adreno_dev);
+
+	/*
+	 * GPC error is typically the result of mistake SW programming.
+	 * Force GPU fault for this interrupt so that we can debug it
+	 * with help of register dump.
+	 */
+
+	KGSL_DRV_CRIT_RATELIMIT(device, "RBBM: GPC error\n");
+	adreno_irqctrl(adreno_dev, 0);
+
+	/* Trigger a fault in the dispatcher - this will effect a restart */
+	adreno_set_gpu_fault(adreno_dev, ADRENO_SOFT_FAULT);
+	adreno_dispatcher_schedule(device);
+}
+
 #define A6XX_INT_MASK \
 	((1 << A6XX_INT_CP_AHB_ERROR) |			\
 	 (1 << A6XX_INT_ATB_ASYNCFIFO_OVERFLOW) |	\
@@ -1788,7 +1816,7 @@ static struct adreno_irq_funcs a6xx_irq_funcs[32] = {
 	ADRENO_IRQ_CALLBACK(NULL), /* 5 - UNUSED */
 	/* 6 - RBBM_ATB_ASYNC_OVERFLOW */
 	ADRENO_IRQ_CALLBACK(a6xx_err_callback),
-	ADRENO_IRQ_CALLBACK(NULL), /* 7 - GPC_ERR */
+	ADRENO_IRQ_CALLBACK(a6xx_gpc_err_int_callback), /* 7 - GPC_ERR */
 	ADRENO_IRQ_CALLBACK(a6xx_preemption_callback),/* 8 - CP_SW */
 	ADRENO_IRQ_CALLBACK(a6xx_cp_hw_err_callback), /* 9 - CP_HW_ERROR */
 	ADRENO_IRQ_CALLBACK(NULL),  /* 10 - CP_CCU_FLUSH_DEPTH_TS */
@@ -2952,6 +2980,9 @@ static void a6xx_platform_setup(struct adreno_device *adreno_dev)
 		gpudev->vbif_xin_halt_ctrl0_mask =
 				A6XX_VBIF_XIN_HALT_CTRL0_MASK;
 
+	if (ADRENO_FEATURE(adreno_dev, ADRENO_SPTP_PC))
+		set_bit(ADRENO_SPTP_PC_CTRL, &adreno_dev->pwrctrl_flag);
+
 	/* Check efuse bits for various capabilties */
 	a6xx_check_features(adreno_dev);
 }
@@ -3341,6 +3372,7 @@ struct adreno_gpudev adreno_a6xx_gpudev = {
 	.preemption_pre_ibsubmit = a6xx_preemption_pre_ibsubmit,
 	.preemption_post_ibsubmit = a6xx_preemption_post_ibsubmit,
 	.preemption_init = a6xx_preemption_init,
+	.preemption_close = a6xx_preemption_close,
 	.preemption_schedule = a6xx_preemption_schedule,
 	.set_marker = a6xx_set_marker,
 	.preemption_context_init = a6xx_preemption_context_init,

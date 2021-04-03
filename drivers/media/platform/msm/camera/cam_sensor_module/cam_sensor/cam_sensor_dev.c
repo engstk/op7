@@ -38,7 +38,7 @@ struct cam_sensor_settings sensor_settings = {
 };
 static bool is_ftm_current_test = false;
 static struct wakeup_source *cam_clk_ws;
-#define CAM_CLK_WS_TIMEOUT 50
+#define CAM_CLK_WS_TIMEOUT 2000
 
 void cam_request_timeout_ws(void)
 {
@@ -483,7 +483,7 @@ static int32_t cam_sensor_driver_platform_probe(
 	s_ctrl->sensor_state = CAM_SENSOR_INIT;
 
 	if (cam_clk_ws_flag) {
-		cam_clk_ws = wakeup_source_register("cam_clk");
+		cam_clk_ws = wakeup_source_register(NULL, "cam_clk");
 		cam_clk_ws_flag = false;
 	}
 

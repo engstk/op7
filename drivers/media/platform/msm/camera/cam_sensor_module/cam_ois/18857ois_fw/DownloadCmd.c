@@ -321,22 +321,18 @@ unsigned char SelectDownload( UINT8 GyroSelect, UINT8 ActSelect, UINT8 MasterSla
 		ptr = ( DOWNLOAD_TBL *)DTbl;
 	}
 
-	/* どのCodeをDownloadするのかTableから検索 */
 	while (ptr->Cmd != 0xFFFF ){
 		if( ptr->Cmd == ( ((UINT16)ActSelect<<8) + GyroSelect) ) break;
 		ptr++ ;
 	}
 	if (ptr->Cmd == 0xFFFF)	return(0xF0);
 
-	/* Downloadする前CodeのInformation情報確認 */
 	if( GetInfomationBeforeDownlaod( &Dspcode, ptr->DataDM, ( ptr->LengthDMA +  ptr->LengthDMB ) ) != 0 ){
 		return(0xF1);
 	}
 
-	/* Downloadする前のCodeと、要求しているActuator/Gyro情報が一致しているか確認 */
 	if( (ActSelect != Dspcode.ActType) || ((GyroSelect&0x7f) != Dspcode.GyroType) ) return(0xF2);
 
-	// 高速化対応Download
 TRACE("DataPM( %08x ), LengthPM( %08x ) , Parity( %08x ), DataDM( %08x ) , LengthDMA( %08x ) , LengthDMB( %08x ) \n"
 	, (int)ptr->DataPM , (int)ptr->LengthPM , (int)ptr->Parity , (int)ptr->DataDM , (int)ptr->LengthDMA , (int)ptr->LengthDMB );
 	return( DownloadToEP3( ptr->DataPM, ptr->LengthPM, ptr->Parity, ptr->DataDM, ptr->LengthDMA , ptr->LengthDMB ) ); 

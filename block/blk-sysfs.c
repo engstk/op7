@@ -111,7 +111,6 @@ queue_ra_store(struct request_queue *q, const char *page, size_t count)
 	return ret;
 }
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 static ssize_t queue_fgio_show(struct request_queue *q, char *page)
 {
 	int cnt = q->fg_count_max;
@@ -560,7 +559,6 @@ static struct queue_sysfs_entry queue_ra_entry = {
 	.store = queue_ra_store,
 };
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 static struct queue_sysfs_entry queue_fgio_entry = {
 	.attr = {.name = "fg_io_cnt_max", .mode = 0644 },
 	.show = queue_fgio_show,
@@ -747,7 +745,6 @@ static struct queue_sysfs_entry throtl_sample_time_entry = {
 static struct attribute *default_attrs[] = {
 	&queue_requests_entry.attr,
 	&queue_ra_entry.attr,
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 	&queue_fgio_entry.attr,
 	&queue_bothio_entry.attr,
 	&queue_max_hw_sectors_entry.attr,
@@ -861,15 +858,11 @@ static void __blk_release_queue(struct work_struct *work)
 	if (test_bit(QUEUE_FLAG_POLL_STATS, &q->queue_flags))
 		blk_stat_remove_callback(q, q->poll_cb);
 	blk_stat_free_callback(q->poll_cb);
-	bdi_put(q->backing_dev_info);
-	blkcg_exit_queue(q);
-
-	if (q->elevator) {
-		ioc_clear_queue(q);
-		elevator_exit(q, q->elevator);
-	}
 
 	blk_free_queue_stats(q->stats);
+
+	if (q->mq_ops)
+		cancel_delayed_work_sync(&q->requeue_work);
 
 	blk_exit_rl(q, &q->root_rl);
 

@@ -77,7 +77,7 @@ static void copy_fd_bitmaps(struct fdtable *nfdt, struct fdtable *ofdt,
  */
 static void copy_fdtable(struct fdtable *nfdt, struct fdtable *ofdt)
 {
-	unsigned int cpy, set;
+	size_t cpy, set;
 
 	BUG_ON(nfdt->max_fds < ofdt->max_fds);
 
@@ -576,7 +576,6 @@ void fd_show_open_files(pid_t pid, struct files_struct *files, struct fdtable *f
 	int sum_fds_of_pid = 0;
 
     mutex_lock(&over_fd_mutex);
-    //printk(KERN_ERR "(PID:%d)Max FD Number:%d", current->pid, fdt->max_fds);
     for(i=0; i<fdt->max_fds; i++) {
         struct over_fd_entry *entry = (struct over_fd_entry*)kzalloc(sizeof(struct over_fd_entry), GFP_KERNEL);
         if(!entry) {

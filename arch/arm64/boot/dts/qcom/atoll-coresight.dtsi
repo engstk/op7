@@ -184,7 +184,6 @@
 		arm,primecell-periphid = <0x0003b968>;
 		reg = <0x6c47000 0x1000>;
 		reg-names = "tpdm-base";
-		status = "disabled";
 
 		coresight-name = "coresight-tpdm-npu";
 
@@ -204,11 +203,31 @@
 		reg = <0x6c40000 0x1000>;
 		reg-names = "tpdm-base";
 
-		status = "disabled";
 		coresight-name = "coresight-tpdm-npu-llm";
 
-		clocks = <&clock_aop QDSS_CLK>;
-		clock-names = "apb_pclk";
+		clocks = <&clock_aop QDSS_CLK>,
+				<&clock_gcc GCC_NPU_AXI_CLK>,
+				<&clock_gcc GCC_NPU_CFG_AHB_CLK>,
+				<&clock_npucc NPU_CC_XO_CLK>,
+				<&clock_npucc NPU_CC_CORE_CLK>,
+				<&clock_npucc NPU_CC_CORE_CLK_SRC>;
+
+		clock-names = "apb_pclk",
+				"npu_axi_clk",
+				"npu_cfg_ahb_clk",
+				"npu_cc_xo_clk",
+				"npu_core_clk",
+				"npu_core_clk_src";
+
+		qcom,proxy-clks = "npu_axi_clk",
+				"npu_cfg_ahb_clk",
+				"npu_cc_xo_clk",
+				"npu_core_clk",
+				"npu_core_clk_src";
+
+		vdd-supply = <&npu_core_gdsc>;
+		vdd_cx-supply = <&VDD_CX_LEVEL>;
+		qcom,proxy-regs ="vdd", "vdd_cx";
 		port {
 			tpdm_npu_llm_out_funnel_npu: endpoint {
 				remote-endpoint =
@@ -225,7 +244,6 @@
 
 		coresight-name = "coresight-tpdm-npu-dpm";
 
-		status = "disabled";
 		clocks = <&clock_aop QDSS_CLK>;
 		clock-names = "apb_pclk";
 		port {
@@ -240,7 +258,7 @@
 		compatible = "qcom,coresight-remote-etm";
 		coresight-name = "coresight-npu-etm0";
 
-		qcom,inst-id = <2>;
+		qcom,inst-id = <14>;
 
 		port {
 			npu_etm0_out_funnel_npu: endpoint {
@@ -308,7 +326,7 @@
 		compatible = "qcom,coresight-remote-etm";
 		coresight-name = "coresight-modem-etm0";
 
-		qcom,inst-id = <11>;
+		qcom,inst-id = <2>;
 
 		port {
 			modem_etm0_out_funnel_dlnt: endpoint {
@@ -342,6 +360,7 @@
 		reg = <0x6804000 0x1000>;
 		reg-names = "tpdm-base";
 
+		status = "disabled";
 		coresight-name = "coresight-tpdm-modem-1";
 
 		clocks = <&clock_aop QDSS_CLK>;
@@ -492,7 +511,7 @@
 		};
 	};
 
-	etm0: tpdm@7040000 {
+	etm0: etm@7040000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7040000 0x1000>;
@@ -511,7 +530,7 @@
 		};
 	};
 
-	etm1: tpdm@7140000 {
+	etm1: etm@7140000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7140000 0x1000>;
@@ -530,7 +549,7 @@
 		};
 	};
 
-	etm2: tpdm@7240000 {
+	etm2: etm@7240000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7240000 0x1000>;
@@ -549,7 +568,7 @@
 		};
 	};
 
-	etm3: tpdm@7340000 {
+	etm3: etm@7340000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7340000 0x1000>;
@@ -568,7 +587,7 @@
 		};
 	};
 
-	etm4: tpdm@7440000 {
+	etm4: etm@7440000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7440000 0x1000>;
@@ -587,7 +606,7 @@
 		};
 	};
 
-	etm5: tpdm@7540000 {
+	etm5: etm@7540000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7540000 0x1000>;
@@ -606,7 +625,7 @@
 		};
 	};
 
-	etm6: tpdm@7640000 {
+	etm6: etm@7640000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7640000 0x1000>;
@@ -625,7 +644,7 @@
 		};
 	};
 
-	etm7: tpdm@7740000 {
+	etm7: etm@7740000 {
 		compatible = "arm,primecell";
 		arm,primecell-periphid = <0x000bb95d>;
 		reg = <0x7740000 0x1000>;
@@ -757,7 +776,6 @@
 
 		coresight-name = "coresight-funnel-npu";
 
-		status = "disabled";
 		clocks = <&clock_aop QDSS_CLK>;
 		clock-names = "apb_pclk";
 		ports {
@@ -2975,5 +2993,21 @@
 				<&replicator_swao_out_eud>;
 			};
 		};
+	};
+
+	ipcb_tgu: tgu@6b0b000 {
+		compatible = "arm,primecell";
+		arm,primecell-periphid = <0x0003b999>;
+		reg = <0x06b0b000 0x1000>;
+		reg-names = "tgu-base";
+		tgu-steps = <3>;
+		tgu-conditions = <4>;
+		tgu-regs = <4>;
+		tgu-timer-counters = <8>;
+
+		coresight-name = "coresight-tgu-ipcb";
+
+		clocks = <&clock_aop QDSS_CLK>;
+		clock-names = "apb_pclk";
 	};
 };

@@ -40,6 +40,10 @@
 #include <linux/psi.h>
 #include "internal.h"
 
+#ifdef CONFIG_CGROUP_IOLIMIT
+#include <linux/iolimit_cgroup.h>
+#endif
+
 #define CREATE_TRACE_POINTS
 #include <trace/events/filemap.h>
 
@@ -344,7 +348,8 @@ int __filemap_fdatawrite_range(struct address_space *mapping, loff_t start,
 		.range_end = end,
 	};
 
-	if (!mapping_cap_writeback_dirty(mapping))
+	if (!mapping_cap_writeback_dirty(mapping) ||
+	    !mapping_tagged(mapping, PAGECACHE_TAG_DIRTY))
 		return 0;
 
 	wbc_attach_fdatawrite_inode(&wbc, mapping->host);
@@ -466,6 +471,28 @@ int filemap_fdatawait_range(struct address_space *mapping, loff_t start_byte,
 	return filemap_check_errors(mapping);
 }
 EXPORT_SYMBOL(filemap_fdatawait_range);
+
+/**
+ * filemap_fdatawait_range_keep_errors - wait for writeback to complete
+ * @mapping:		address space structure to wait for
+ * @start_byte:		offset in bytes where the range starts
+ * @end_byte:		offset in bytes where the range ends (inclusive)
+ *
+ * Walk the list of under-writeback pages of the given address space in the
+ * given range and wait for all of them.  Unlike filemap_fdatawait_range(),
+ * this function does not clear error status of the address space.
+ *
+ * Use this function if callers don't handle errors themselves.  Expected
+ * call sites are system-wide / filesystem-wide data flushers: e.g. sync(2),
+ * fsfreeze(8)
+ */
+int filemap_fdatawait_range_keep_errors(struct address_space *mapping,
+		loff_t start_byte, loff_t end_byte)
+{
+	__filemap_fdatawait_range(mapping, start_byte, end_byte);
+	return filemap_check_and_keep_errors(mapping);
+}
+EXPORT_SYMBOL(filemap_fdatawait_range_keep_errors);
 
 /**
  * file_fdatawait_range - wait for writeback to complete
@@ -826,7 +853,6 @@ int add_to_page_cache_lru(struct page *page, struct address_space *mapping,
 		if (!(gfp_mask & __GFP_WRITE) && shadow)
 			workingset_refault(page, shadow);
 
-		/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 		if (!smb_uid_lru_add(page))
 			lru_cache_add(page);
 
@@ -2014,6 +2040,12 @@ static ssize_t generic_file_buffered_read(struct kiocb *iocb,
 		unsigned long nr, ret;
 
 		cond_resched();
+
+#ifdef CONFIG_CGROUP_IOLIMIT
+		if (iolimit_enable)
+			io_read_bandwidth_control(PAGE_SIZE);
+#endif
+
 find_page:
 		if (fatal_signal_pending(current)) {
 			error = -EINTR;
@@ -2920,6 +2952,9 @@ inline ssize_t generic_write_checks(struct kiocb *iocb, struct iov_iter *from)
 	unsigned long limit = rlimit(RLIMIT_FSIZE);
 	loff_t pos;
 
+	if (IS_SWAPFILE(inode))
+		return -ETXTBSY;
+
 	if (!iov_iter_count(from))
 		return 0;
 
@@ -3102,6 +3137,10 @@ ssize_t generic_perform_write(struct file *file,
 		size_t copied;		/* Bytes copied from user */
 		void *fsdata;
 
+#ifdef CONFIG_CGROUP_IOLIMIT
+		if (iolimit_enable)
+			io_write_bandwidth_control(PAGE_SIZE);
+#endif
 		offset = (pos & (PAGE_SIZE - 1));
 		bytes = min_t(unsigned long, PAGE_SIZE - offset,
 						iov_iter_count(i));

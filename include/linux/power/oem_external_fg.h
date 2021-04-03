@@ -37,16 +37,14 @@ struct external_battery_gauge {
 	bool (*is_usb_switch_on)(void);
 	int (*get_battery_status)(void);
 	int (*get_batt_remaining_capacity)(void);
+	int (*get_batt_full_chg_capacity)(void);
 	int (*get_batt_health)(void);
 	int (*get_batt_bq_soc)(void);
 	int (*monitor_for_recharging)(void);
 	int (*get_battery_soc)(void);
 	int (*get_average_current)(void);
 	int (*get_batt_cc)(void);
-	/* yangfangbiao@oneplus.cn, 2015/02/13  Add fcc interface */
 	int (*get_batt_fcc)(void);
-	/* yangfangbiao@oneplus.cn, */
-	/*2015/01/06  Modify for  sync with KK charge standard  */
 	bool (*fast_chg_started)(void);
 	bool (*fast_chg_status_is_ok)(void);
 	bool (*fast_switch_to_normal)(void);
@@ -66,7 +64,6 @@ struct external_battery_gauge {
 	int (*fast_chg_started_status)(bool status);
 	bool (*get_fastchg_firmware_already_updated)(void);
 	int (*get_device_type)(void);
-	/* david.liu@bsp, 20161025 Add BQ27411 dash charging */
 };
 
 struct notify_dash_event {
@@ -101,9 +98,9 @@ enum ffc_step {
 
 enum batt_status_type {
 	BATT_STATUS_GOOD,
-	BATT_STATUS_BAD_TEMP, /* cold or hot */
+	BATT_STATUS_BAD_TEMP,
 	BATT_STATUS_BAD,
-	BATT_STATUS_REMOVED, /* on v2.2 only */
+	BATT_STATUS_REMOVED,
 	BATT_STATUS_INVALID_v1 = BATT_STATUS_REMOVED,
 	BATT_STATUS_INVALID
 };
@@ -129,7 +126,7 @@ extern bool get_oem_charge_done_status(void);
 extern int load_soc(void);
 extern void backup_soc_ex(int soc);
 extern void clean_backup_soc_ex(void);
-/*add for dash adapter update*/
+
 extern void op_bus_vote(int disable);
 extern bool dash_adapter_update_is_tx_gpio(unsigned int  gpio_num);
 extern bool dash_adapter_update_is_rx_gpio(unsigned  int gpio_num);
@@ -140,4 +137,5 @@ bool get_4p45_battery_support(void);
 bool check_skin_thermal_high(void);
 bool check_call_on_status(void);
 void update_fast_switch_off_status(void);
+void update_disconnect_pd_status(bool en);
 #endif

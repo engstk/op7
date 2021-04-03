@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -32,7 +32,8 @@
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
-/* @bsp, 2019/04/17 Battery & Charging porting */
+#include <linux/qpnp/qpnp-pbs.h>
+#include <linux/qpnp/qpnp-misc.h>
 #include <linux/power/oem_external_fg.h>
 
 #include <linux/syscalls.h>
@@ -181,6 +182,12 @@ enum pon_type {
 	PON_KPDPWR_RESIN = PON_POWER_ON_TYPE_KPDPWR_RESIN,
 };
 
+struct pon_reg {
+	unsigned int val;
+	u16 addr;
+	struct list_head list;
+};
+
 struct qpnp_pon_config {
 	u32			pon_type;
 	u32			support_reset;
@@ -206,7 +213,6 @@ struct pon_regulator {
 	u32			bit;
 	bool			enabled;
 };
-/* @bsp, 2019/04/17 Battery & Charging porting */
 /*
 struct qpnp_pon {
 	struct device		*dev;
@@ -214,14 +220,18 @@ struct qpnp_pon {
 	struct input_dev	*pon_input;
 	struct qpnp_pon_config	*pon_cfg;
 	struct pon_regulator	*pon_reg_cfg;
+	struct list_head	restore_regs;
 	struct list_head	list;
+	struct mutex		restore_lock;
 	struct delayed_work	bark_work;
 	struct dentry		*debugfs;
+	struct device_node	*pbs_dev_node;
 	u16			base;
 	u8			subtype;
 	u8			pon_ver;
 	u8			warm_reset_reason1;
 	u8			warm_reset_reason2;
+	u8			twm_state;
 	int			num_pon_config;
 	int			num_pon_reg;
 	int			pon_trigger_reason;
@@ -241,8 +251,11 @@ struct qpnp_pon {
 	bool			ps_hold_hard_reset_disable;
 	bool			ps_hold_shutdown_disable;
 	bool			kpdpwr_dbc_enable;
+	bool			support_twm_config;
 	bool			resin_pon_reset;
 	ktime_t			kpdpwr_last_release_time;
+	struct notifier_block	pon_nb;
+	bool			legacy_hard_reset_offset;
 };
 */
 static int pon_ship_mode_en;
@@ -320,6 +333,42 @@ static const char * const qpnp_poff_reason[] = {
 	[39] = "Triggered from S3_RESET_KPDPWR_ANDOR_RESIN",
 };
 
+static int qpnp_pon_store_reg(struct qpnp_pon *pon, u16 addr)
+{
+	int rc;
+	unsigned int val;
+	struct pon_reg *reg, *pos = NULL;
+
+	mutex_lock(&pon->restore_lock);
+	rc = regmap_read(pon->regmap, addr, &val);
+	if (rc < 0) {
+		dev_info(pon->dev, "Register read failed, addr=0x%04X, rc=%d\n",
+			addr, rc);
+	} else {
+		list_for_each_entry(pos, &pon->restore_regs, list) {
+			if (pos->addr == addr) {
+				pos->val = val;
+				goto done;
+			}
+		}
+
+		reg = devm_kzalloc(pon->dev, sizeof(*reg), GFP_KERNEL);
+		if (!reg) {
+			rc = -ENOMEM;
+			goto done;
+		}
+
+		reg->addr = addr;
+		reg->val = val;
+		INIT_LIST_HEAD(&reg->list);
+		list_add_tail(&reg->list, &pon->restore_regs);
+	}
+
+done:
+	mutex_unlock(&pon->restore_lock);
+	return rc;
+}
+
 static int
 qpnp_pon_masked_write(struct qpnp_pon *pon, u16 addr, u8 mask, u8 val)
 {
@@ -330,6 +379,18 @@ qpnp_pon_masked_write(struct qpnp_pon *pon, u16 addr, u8 mask, u8 val)
 		dev_err(pon->dev, "Register write failed, addr=0x%04X, rc=%d\n",
 			addr, rc);
 	return rc;
+}
+
+static int
+qpnp_pon_masked_write_backup(struct qpnp_pon *pon, u16 addr, u8 mask, u8 val)
+{
+	int rc;
+
+	rc = qpnp_pon_masked_write(pon, addr, mask, val);
+	if (rc < 0)
+		return rc;
+
+	return qpnp_pon_store_reg(pon, addr);
 }
 
 static int qpnp_pon_read(struct qpnp_pon *pon, u16 addr, unsigned int *val)
@@ -376,7 +437,7 @@ int qpnp_pon_set_restart_reason(enum pon_restart_reason reason)
 	if (!pon->store_hard_reset_reason)
 		return 0;
 
-	if (is_pon_gen2(pon))
+	if (is_pon_gen2(pon) && !pon->legacy_hard_reset_offset)
 		rc = qpnp_pon_masked_write(pon, QPNP_PON_SOFT_RB_SPARE(pon),
 					   GENMASK(7, 1), (reason << 1));
 	else
@@ -431,7 +492,7 @@ static int qpnp_pon_set_dbc(struct qpnp_pon *pon, u32 delay)
 	}
 
 	val = ilog2(val);
-	rc = qpnp_pon_masked_write(pon, QPNP_PON_DBC_CTL(pon),
+	rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_DBC_CTL(pon),
 				   QPNP_PON_DBC_DELAY_MASK(pon), val);
 	if (!rc)
 		pon->dbc_time_us = delay;
@@ -493,12 +554,52 @@ static ssize_t debounce_us_store(struct device *dev,
 }
 static DEVICE_ATTR_RW(debounce_us);
 
+static struct qpnp_pon_config *
+qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
+{
+	int i;
+
+	for (i = 0; i < pon->num_pon_config; i++) {
+		if (pon_type == pon->pon_cfg[i].pon_type)
+			return  &pon->pon_cfg[i];
+	}
+
+	return NULL;
+}
+
+#define PON_TWM_ENTRY_PBS_BIT           BIT(0)
 static int qpnp_pon_reset_config(struct qpnp_pon *pon,
 				 enum pon_power_off_type type)
 {
 	int rc;
 	bool disable = false;
 	u16 rst_en_reg;
+	struct qpnp_pon_config *cfg;
+
+	/* Ignore the PS_HOLD reset config if TWM ENTRY is enabled */
+	if (pon->support_twm_config && pon->twm_state == PMIC_TWM_ENABLE) {
+		rc = qpnp_pbs_trigger_event(pon->pbs_dev_node,
+					PON_TWM_ENTRY_PBS_BIT);
+		if (rc < 0) {
+			pr_err("Unable to trigger PBS trigger for TWM entry rc=%d\n",
+							rc);
+			return rc;
+		}
+
+		cfg = qpnp_get_cfg(pon, PON_KPDPWR);
+		if (cfg) {
+			/* configure KPDPWR_S2 to Hard reset */
+			rc = qpnp_pon_masked_write(pon, cfg->s2_cntl_addr,
+						QPNP_PON_S2_CNTL_TYPE_MASK,
+						PON_POWER_OFF_HARD_RESET);
+			if (rc < 0)
+				pr_err("Unable to config KPDPWR_N S2 for hard-reset rc=%d\n",
+					rc);
+		}
+
+		pr_crit("PMIC configured for TWM entry\n");
+		return 0;
+	}
 
 	if (pon->pon_ver == QPNP_PON_GEN1_V1)
 		rst_en_reg = QPNP_PON_PS_HOLD_RST_CTL(pon);
@@ -688,6 +789,8 @@ int qpnp_pon_system_pwr_off(enum pon_power_off_type type)
 		}
 	}
 
+out:
+	spin_unlock_irqrestore(&spon_list_slock, flags);
 	/* Set ship mode here if it has been requested */
 	if (!!pon_ship_mode_en) {
 		batt_psy = power_supply_get_by_name("battery");
@@ -700,8 +803,6 @@ int qpnp_pon_system_pwr_off(enum pon_power_off_type type)
 				dev_err(sys_reset_dev->dev, "Failed to set ship mode\n");
 		}
 	}
-out:
-	spin_unlock_irqrestore(&spon_list_slock, flags);
 
 	return rc;
 }
@@ -809,10 +910,10 @@ int qpnp_pon_trigger_config(enum pon_trigger_source pon_src, bool enable)
 	}
 
 	if (is_pon_gen2(pon) && pon_src == PON_SMPL)
-		rc = qpnp_pon_masked_write(pon, QPNP_PON_SMPL_CTL(pon),
+		rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_SMPL_CTL(pon),
 			QPNP_PON_SMPL_EN, enable ? QPNP_PON_SMPL_EN : 0);
 	else
-		rc = qpnp_pon_masked_write(pon, QPNP_PON_TRIGGER_EN(pon),
+		rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_TRIGGER_EN(pon),
 				BIT(pon_src), enable ? BIT(pon_src) : 0);
 
 	return rc;
@@ -849,21 +950,10 @@ static int qpnp_pon_store_and_clear_warm_reset(struct qpnp_pon *pon)
 				QPNP_PON_WARM_RESET_REASON1(pon), rc);
 			return rc;
 		}
+		qpnp_pon_store_reg(pon, QPNP_PON_WARM_RESET_REASON1(pon));
 	}
 
 	return 0;
-}
-
-static struct qpnp_pon_config *qpnp_get_cfg(struct qpnp_pon *pon, u32 pon_type)
-{
-	int i;
-
-	for (i = 0; i < pon->num_pon_config; i++) {
-		if (pon_type == pon->pon_cfg[i].pon_type)
-			return &pon->pon_cfg[i];
-	}
-
-	return NULL;
 }
 
 static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
@@ -902,11 +992,14 @@ static int qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		pon_rt_bit = QPNP_PON_KPDPWR_N_SET;
 		if ((pon_rt_sts & pon_rt_bit) == 0) {
 			pr_info("Power-Key UP\n");
+			set_pwr_status(key_released);
 			schedule_work(&pon->up_work);
 			cancel_delayed_work(&pon->press_work);
+			cancel_delayed_work(&pon->press_pwr);
 		} else {
 			pr_info("Power-Key DOWN\n");
 			schedule_delayed_work(&pon->press_work, msecs_to_jiffies(4000));
+			schedule_delayed_work(&pon->press_pwr, msecs_to_jiffies(6000));
 		}
 		break;
 	case PON_RESIN:
@@ -1174,6 +1267,7 @@ static void press_work_func(struct work_struct *work)
 		if (display_bl == 0 && boot_mode == MSM_BOOT_MODE__NORMAL) {
 			oem_force_minidump_mode();
 			show_state_filter(TASK_UNINTERRUPTIBLE);
+			send_sig_to_get_trace("system_server");
 			panic("power key still pressed\n");
 		}
 	}
@@ -1182,6 +1276,39 @@ static void press_work_func(struct work_struct *work)
 err_return:
 	return;
 }
+
+static void press_pwr_func(struct work_struct *work)
+{
+	int rc;
+	uint pon_rt_sts = 0;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon =
+		container_of(work, struct qpnp_pon, press_pwr.work);
+
+	cfg = qpnp_get_cfg(pon, PON_KPDPWR);
+	if (!cfg) {
+		dev_err(pon->dev, "Invalid config pointer\n");
+		goto err_return;
+	}
+	/* check the RT status to get the current status of the line */
+	rc = regmap_read(pon->regmap, QPNP_PON_RT_STS(pon), &pon_rt_sts);
+	if (rc) {
+		dev_err(pon->dev, "Unable to read PON RT status\n");
+		goto err_return;
+	}
+
+	if ((pon_rt_sts & QPNP_PON_KPDPWR_N_SET) == 1) {
+		qpnp_powerkey_state_check(pon, 1);
+		dev_err(pon->dev, "after 8s Power-Key is still DOWN\n");
+		set_pwr_status(key_pressed);
+		compound_key_to_get_trace("system_server");
+	}
+	msleep(20);
+	sys_sync();
+err_return:
+	return;
+}
+
 
 static irqreturn_t qpnp_resin_bark_irq(int irq, void *_pon)
 {
@@ -1313,8 +1440,8 @@ static int qpnp_config_pull(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 		return -EINVAL;
 	}
 
-	return qpnp_pon_masked_write(pon, QPNP_PON_PULL_CTL(pon), pull_bit,
-				     cfg->pull_up ? pull_bit : 0);
+	return qpnp_pon_masked_write_backup(pon, QPNP_PON_PULL_CTL(pon),
+				pull_bit, cfg->pull_up ? pull_bit : 0);
 }
 
 static int qpnp_config_reset(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
@@ -1341,8 +1468,8 @@ static int qpnp_config_reset(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 	}
 
 	/* Disable S2 reset */
-	rc = qpnp_pon_masked_write(pon, cfg->s2_cntl2_addr, QPNP_PON_S2_CNTL_EN,
-				   0);
+	rc = qpnp_pon_masked_write_backup(pon, cfg->s2_cntl2_addr,
+				QPNP_PON_S2_CNTL_EN, 0);
 	if (rc)
 		return rc;
 
@@ -1353,7 +1480,7 @@ static int qpnp_config_reset(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 		if (cfg->s1_timer <= s1_delay[i])
 			break;
 	}
-	rc = qpnp_pon_masked_write(pon, s1_timer_addr,
+	rc = qpnp_pon_masked_write_backup(pon, s1_timer_addr,
 				QPNP_PON_S1_TIMER_MASK, i);
 	if (rc)
 		return rc;
@@ -1364,18 +1491,18 @@ static int qpnp_config_reset(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 		i = ilog2(i + 1);
 	}
 
-	rc = qpnp_pon_masked_write(pon, s2_timer_addr, QPNP_PON_S2_TIMER_MASK,
-				   i);
+	rc = qpnp_pon_masked_write_backup(pon, s2_timer_addr,
+				QPNP_PON_S2_TIMER_MASK, i);
 	if (rc)
 		return rc;
 
-	rc = qpnp_pon_masked_write(pon, cfg->s2_cntl_addr,
+	rc = qpnp_pon_masked_write_backup(pon, cfg->s2_cntl_addr,
 				QPNP_PON_S2_CNTL_TYPE_MASK, (u8)cfg->s2_type);
 	if (rc)
 		return rc;
 
 	/* Enable S2 reset */
-	return qpnp_pon_masked_write(pon, cfg->s2_cntl2_addr,
+	return qpnp_pon_masked_write_backup(pon, cfg->s2_cntl2_addr,
 				     QPNP_PON_S2_CNTL_EN, QPNP_PON_S2_CNTL_EN);
 }
 
@@ -1464,6 +1591,18 @@ qpnp_pon_request_irqs(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 		if (cfg->pon_type == PON_RESIN && cfg->support_reset)
 			enable_irq_wake(cfg->bark_irq);
 	}
+
+	return 0;
+}
+
+static int
+qpnp_pon_free_irqs(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
+{
+	if (cfg->state_irq > 0)
+		devm_free_irq(pon->dev, cfg->state_irq, pon);
+
+	if (cfg->use_bark && cfg->bark_irq > 0)
+		devm_free_irq(pon->dev, cfg->bark_irq, pon);
 
 	return 0;
 }
@@ -1823,7 +1962,7 @@ static int qpnp_pon_config_init(struct qpnp_pon *pon,
 					return rc;
 			} else if (cfg->pon_type != PON_CBLPWR) {
 				/* Disable S2 reset */
-				rc = qpnp_pon_masked_write(pon,
+				rc = qpnp_pon_masked_write_backup(pon,
 							cfg->s2_cntl2_addr,
 							QPNP_PON_S2_CNTL_EN, 0);
 				if (rc)
@@ -2038,7 +2177,7 @@ qpnp_pon_uvlo_dload_set(const char *val, const struct kernel_param *kp)
 
 	reg = *(bool *)kp->arg ? QPNP_PON_UVLO_DLOAD_EN : 0;
 
-	return qpnp_pon_masked_write(pon, QPNP_PON_XVDD_RB_SPARE(pon),
+	return qpnp_pon_masked_write_backup(pon, QPNP_PON_XVDD_RB_SPARE(pon),
 				   QPNP_PON_UVLO_DLOAD_EN, reg);
 }
 
@@ -2138,6 +2277,35 @@ static int qpnp_pon_read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,
 	}
 
 	return 0;
+}
+
+static int pon_twm_notifier_cb(struct notifier_block *nb,
+				unsigned long action, void *data)
+{
+	struct qpnp_pon *pon = container_of(nb, struct qpnp_pon, pon_nb);
+
+	if (action != PMIC_TWM_CLEAR &&
+			action != PMIC_TWM_ENABLE) {
+		pr_debug("Unsupported option %lu\n", action);
+		return NOTIFY_OK;
+	}
+
+	pon->twm_state = (u8)action;
+	pr_debug("TWM state = %d\n", pon->twm_state);
+
+	return NOTIFY_OK;
+}
+
+static int pon_register_twm_notifier(struct qpnp_pon *pon)
+{
+	int rc;
+
+	pon->pon_nb.notifier_call = pon_twm_notifier_cb;
+	rc = qpnp_misc_twm_notifier_register(&pon->pon_nb);
+	if (rc < 0)
+		pr_err("Failed to register pon_twm_notifier_cb rc=%d\n", rc);
+
+	return rc;
 }
 
 static bool created_pwr_on_off_obj;
@@ -2346,12 +2514,12 @@ static int qpnp_pon_configure_s3_reset(struct qpnp_pon *pon)
 			debounce = ilog2(debounce);
 
 		/* S3 debounce is a SEC_ACCESS register */
-		rc = qpnp_pon_masked_write(pon, QPNP_PON_SEC_ACCESS(pon),
+		rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_SEC_ACCESS(pon),
 					0xFF, QPNP_PON_SEC_UNLOCK);
 		if (rc)
 			return rc;
 
-		rc = qpnp_pon_masked_write(pon, QPNP_PON_S3_DBC_CTL(pon),
+		rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_S3_DBC_CTL(pon),
 					QPNP_PON_S3_DBC_DELAY_MASK, debounce);
 		if (rc)
 			return rc;
@@ -2379,7 +2547,7 @@ static int qpnp_pon_configure_s3_reset(struct qpnp_pon *pon)
 		 * been configured by the bootloader then this operation will
 		 * not have an effect.
 		 */
-		rc = qpnp_pon_masked_write(pon, QPNP_PON_S3_SRC(pon),
+		rc = qpnp_pon_masked_write_backup(pon, QPNP_PON_S3_SRC(pon),
 					QPNP_PON_S3_SRC_MASK, src_val);
 		if (rc)
 			return rc;
@@ -2615,11 +2783,30 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 	}
 	pon->base = base;
 
+	if (of_property_read_bool(dev->of_node,
+					"qcom,support-twm-config")) {
+		pon->support_twm_config = true;
+		rc = pon_register_twm_notifier(pon);
+		if (rc < 0) {
+			pr_err("Failed to register TWM notifier rc=%d\n", rc);
+			return rc;
+		}
+		pon->pbs_dev_node = of_parse_phandle(dev->of_node,
+						"qcom,pbs-client", 0);
+		if (!pon->pbs_dev_node) {
+			pr_err("Missing qcom,pbs-client property\n");
+			return -EINVAL;
+		}
+	}
+
 	sys_reset = of_property_read_bool(dev->of_node, "qcom,system-reset");
 	if (sys_reset && sys_reset_dev) {
 		dev_err(dev, "qcom,system-reset property must only be specified for one PMIC PON device in the system\n");
 		return -EINVAL;
 	}
+
+	INIT_LIST_HEAD(&pon->restore_regs);
+	mutex_init(&pon->restore_lock);
 
 	/* Get the total number of pon configurations and regulators */
 	for_each_available_child_of_node(dev->of_node, node) {
@@ -2653,6 +2840,7 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&pon->bark_work, bark_work_func);
 	INIT_DELAYED_WORK(&pon->press_work, press_work_func);
+	INIT_DELAYED_WORK(&pon->press_pwr, press_pwr_func);
 	INIT_WORK(&pon->up_work, up_work_func);
 
 	rc = qpnp_pon_parse_dt_power_off_config(pon);
@@ -2678,6 +2866,9 @@ static int qpnp_pon_probe(struct platform_device *pdev)
 
 	pon->store_hard_reset_reason = of_property_read_bool(dev->of_node,
 					"qcom,store-hard-reset-reason");
+
+	pon->legacy_hard_reset_offset = of_property_read_bool(pdev->dev.of_node,
+					"qcom,use-legacy-hard-reset-offset");
 
 	if (of_property_read_bool(dev->of_node, "qcom,secondary-pon-reset")) {
 		if (sys_reset) {
@@ -2738,9 +2929,60 @@ static int qpnp_pon_remove(struct platform_device *pdev)
 		list_del(&pon->list);
 		spin_unlock_irqrestore(&spon_list_slock, flags);
 	}
+	mutex_destroy(&pon->restore_lock);
 
 	return 0;
 }
+
+#ifdef CONFIG_PM
+static int qpnp_pon_restore(struct device *dev)
+{
+	int i, rc = 0;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon = dev_get_drvdata(dev);
+	struct pon_reg *pos = NULL;
+
+	list_for_each_entry(pos, &pon->restore_regs, list) {
+		rc = regmap_write(pon->regmap, pos->addr, pos->val);
+		if (rc < 0) {
+			dev_err(dev, "Failed to restore reg addr=0x%04X rc=%d\n",
+				pos->addr, rc);
+			return rc;
+		}
+	}
+
+	for (i = 0; i < pon->num_pon_config; i++) {
+		cfg = &pon->pon_cfg[i];
+		rc = qpnp_pon_request_irqs(pon, cfg);
+		if (rc < 0)
+			return rc;
+	}
+
+	return rc;
+}
+
+static int qpnp_pon_freeze(struct device *dev)
+{
+	int i, rc = 0;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon = dev_get_drvdata(dev);
+
+	for (i = 0; i < pon->num_pon_config; i++) {
+		cfg = &pon->pon_cfg[i];
+		rc = qpnp_pon_free_irqs(pon, cfg);
+		if (rc < 0)
+			return rc;
+	}
+
+	return rc;
+}
+
+static const struct dev_pm_ops qpnp_pon_pm_ops = {
+	.freeze = qpnp_pon_freeze,
+	.restore = qpnp_pon_restore,
+	.thaw = qpnp_pon_restore,
+};
+#endif
 
 static const struct of_device_id qpnp_pon_match_table[] = {
 	{ .compatible = "qcom,qpnp-power-on" },
@@ -2751,6 +2993,9 @@ static struct platform_driver qpnp_pon_driver = {
 	.driver = {
 		.name = "qcom,qpnp-power-on",
 		.of_match_table = qpnp_pon_match_table,
+#ifdef CONFIG_PM
+		.pm = &qpnp_pon_pm_ops,
+#endif
 	},
 	.probe = qpnp_pon_probe,
 	.remove = qpnp_pon_remove,

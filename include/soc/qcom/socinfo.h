@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2009-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -79,8 +79,14 @@
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs403")
 #define early_machine_is_qcs401()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs401")
+#define early_machine_is_qcs404()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs404")
+#define early_machine_is_qcs407()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs407")
 #define early_machine_is_sdxprairie()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdxprairie")
+#define early_machine_is_mdm9607()      \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,mdm9607")
 #define early_machine_is_sdmmagpie()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdmmagpie")
 #define early_machine_is_sdmmagpiep()	\
@@ -99,6 +105,22 @@
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,qcs410")
 #define early_machine_is_atoll()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,atoll")
+#define early_machine_is_atollp()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,atollp")
+#define early_machine_is_atoll_ab()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,atoll-ab")
+#define early_machine_is_sdm660()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdm660")
+#define early_machine_is_sda660()	\
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sda660")
+#define early_machine_is_sdm429w()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sdm429w")
+#define early_machine_is_sda429w()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,sda429w")
+#define early_machine_is_trinket_iot()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,trinket-iot")
+#define early_machine_is_trinketp_iot()       \
+	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,trinketp-iot")
 #else
 #define of_board_is_sim()		0
 #define of_board_is_rumi()		0
@@ -128,7 +150,10 @@
 #define early_machine_is_qcs405()	0
 #define early_machine_is_qcs403()	0
 #define early_machine_is_qcs401()	0
+#define early_machine_is_qcs404()       0
+#define early_machine_is_qcs407()       0
 #define early_machine_is_sdxprairie()	0
+#define early_machine_is_mdm9607()      0
 #define early_machine_is_sdmmagpie()	0
 #define early_machine_is_sdmmagpiep()	0
 #define early_machine_is_sa6155p()	0
@@ -138,6 +163,13 @@
 #define early_machine_is_qcs610()       0
 #define early_machine_is_qcs410()       0
 #define early_machine_is_atoll()	0
+#define early_machine_is_atollp()	0
+#define early_machine_is_sdm660()	0
+#define early_machine_is_sda660()	0
+#define early_machine_is_sdm429w()	0
+#define early_machine_is_sda429w()	0
+#define early_machine_is_trinket_iot()	0
+#define early_machine_is_trinketp_iot()	0
 #endif
 
 #define PLATFORM_SUBTYPE_MDM	1
@@ -169,7 +201,10 @@ enum msm_cpu {
 	MSM_CPU_QCS405,
 	MSM_CPU_QCS403,
 	MSM_CPU_QCS401,
+	MSM_CPU_QCS404,
+	MSM_CPU_QCS407,
 	SDX_CPU_SDXPRAIRIE,
+	MSM_CPU_9607,
 	MSM_CPU_SDMMAGPIE,
 	MSM_CPU_SDMMAGPIEP,
 	MSM_CPU_SA6155P,
@@ -179,6 +214,14 @@ enum msm_cpu {
 	MSM_CPU_QCS610,
 	MSM_CPU_QCS410,
 	MSM_CPU_ATOLL,
+	MSM_CPU_ATOLLP,
+	MSM_CPU_ATOLL_AB,
+	MSM_CPU_SDM660,
+	MSM_CPU_SDA660,
+	MSM_CPU_SDM429W,
+	MSM_CPU_SDA429W,
+	MSM_CPU_TRINKET_IOT,
+	MSM_CPU_TRINKETP_IOT,
 };
 
 struct msm_soc_info {

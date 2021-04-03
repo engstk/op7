@@ -28,8 +28,13 @@
 #include <linux/task_work.h>
 #include <linux/sched/task.h>
 
+/* [OSP-3675]: ext4 fsync */
+#include <linux/string.h>
+
 #include "pnode.h"
 #include "internal.h"
+
+#define EMBEDDED_NAME_MAX	(PATH_MAX - offsetof(struct filename, iname))
 
 /* Maximum number of mounts in a mount namespace */
 unsigned int sysctl_mount_max __read_mostly = 100000;
@@ -1778,6 +1783,12 @@ SYSCALL_DEFINE2(umount, char __user *, name, int, flags)
 dput_and_out:
 	/* we mustn't call path_put() as that would clear mnt_expiry_mark */
 	dput(path.dentry);
+	if (user_request && (!retval || (flags & MNT_FORCE))) {
+		/* filesystem needs to handle unclosed namespaces */
+		if (mnt->mnt.mnt_sb->s_op->umount_end)
+			mnt->mnt.mnt_sb->s_op->umount_end(mnt->mnt.mnt_sb,
+					flags);
+	}
 	mntput_no_expire(mnt);
 
 	if (!user_request)
@@ -1793,11 +1804,6 @@ dput_and_out:
 
 		/* flush delayed_mntput_work to put sb->s_active */
 		flush_delayed_mntput_wait();
-	}
-	if (!retval || (flags & MNT_FORCE)) {
-		/* filesystem needs to handle unclosed namespaces */
-		if (mnt->mnt.mnt_sb->s_op->umount_end)
-			mnt->mnt.mnt_sb->s_op->umount_end(mnt->mnt.mnt_sb, flags);
 	}
 out:
 	return retval;
@@ -2822,7 +2828,7 @@ void *copy_mount_options(const void __user * data)
 	 * the remainder of the page.
 	 */
 	/* copy_from_user cannot cross TASK_SIZE ! */
-	size = TASK_SIZE - (unsigned long)data;
+	size = TASK_SIZE - (unsigned long)untagged_addr(data);
 	if (size > PAGE_SIZE)
 		size = PAGE_SIZE;
 
@@ -2861,6 +2867,21 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 	struct path path;
 	unsigned int mnt_flags = 0, sb_flags;
 	int retval = 0;
+	int userdata = 0;
+
+	if (likely(dir_name)) {
+		char *kdir_name = (char *)__get_free_page(GFP_KERNEL);
+
+		if (likely(kdir_name)) {
+			int len = strncpy_from_user(kdir_name, dir_name, EMBEDDED_NAME_MAX);
+
+			if (likely(len)) {
+				if (!strcmp(kdir_name, "/data"))
+					userdata = 1;
+			}
+			free_page((unsigned long)kdir_name);
+		}
+	}
 
 	/* Discard magic */
 	if ((flags & MS_MGC_MSK) == MS_MGC_VAL)
@@ -2924,6 +2945,8 @@ long do_mount(const char *dev_name, const char __user *dir_name,
 			    SB_LAZYTIME |
 			    SB_I_VERSION);
 
+	if (userdata)
+		sb_flags |= SB_USERDATA;
 	if (flags & MS_REMOUNT)
 		retval = do_remount(&path, flags, sb_flags, mnt_flags,
 				    data_page);
@@ -3274,8 +3297,8 @@ SYSCALL_DEFINE2(pivot_root, const char __user *, new_root,
 	/* make certain new is below the root */
 	if (!is_path_reachable(new_mnt, new.dentry, &root))
 		goto out4;
-	root_mp->m_count++; /* pin it so it won't go away */
 	lock_mount_hash();
+	root_mp->m_count++; /* pin it so it won't go away */
 	detach_mnt(new_mnt, &parent_path);
 	detach_mnt(root_mnt, &root_parent);
 	if (root_mnt->mnt.mnt_flags & MNT_LOCKED) {

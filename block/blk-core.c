@@ -34,6 +34,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/blk-cgroup.h>
 #include <linux/debugfs.h>
+#include <linux/psi.h>
+#include <linux/blk-crypto.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
@@ -51,6 +53,16 @@
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *blk_debugfs_root;
+#endif
+
+/* io information */
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+extern void ohm_iolatency_record(struct request *req, unsigned int nr_bytes, int fg, u64 delta_us);
+static u64 latency_count;
+static u32 io_print_count;
+bool       io_print_flag;
+#define PRINT_LATENCY 500000 /* 500*1000 */
+#define COUNT_TIME 86400000 /* 24*60*60*1000 */
 #endif
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_bio_remap);
@@ -121,7 +133,7 @@ void blk_rq_init(struct request_queue *q, struct request *rq)
 	memset(rq, 0, sizeof(*rq));
 
 	INIT_LIST_HEAD(&rq->queuelist);
-	/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 	INIT_LIST_HEAD(&rq->fg_list);
 	INIT_LIST_HEAD(&rq->timeout_list);
 	rq->cpu = -1;
@@ -347,7 +359,6 @@ void blk_sync_queue(struct request_queue *q)
 		struct blk_mq_hw_ctx *hctx;
 		int i;
 
-		cancel_delayed_work_sync(&q->requeue_work);
 		queue_for_each_hw_ctx(q, hctx, i)
 			cancel_delayed_work_sync(&hctx->run_work);
 	} else {
@@ -355,6 +366,34 @@ void blk_sync_queue(struct request_queue *q)
 	}
 }
 EXPORT_SYMBOL(blk_sync_queue);
+
+void blk_set_preempt_only(struct request_queue *q, bool preempt_only)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(q->queue_lock, flags);
+	if (preempt_only)
+		queue_flag_set(QUEUE_FLAG_PREEMPT_ONLY, q);
+	else
+		queue_flag_clear(QUEUE_FLAG_PREEMPT_ONLY, q);
+	spin_unlock_irqrestore(q->queue_lock, flags);
+
+	/*
+	 * The synchronize_rcu() implicied in blk_mq_freeze_queue()
+	 * or the explicit one will make sure the above write on
+	 * PREEMPT_ONLY is observed in blk_queue_enter() before
+	 * running blk_mq_unfreeze_queue().
+	 *
+	 * blk_mq_freeze_queue() also drains up any request in queue,
+	 * so blk_queue_enter() will see the above updated value of
+	 * PREEMPT flag before any new allocation.
+	 */
+	if (!blk_mq_freeze_queue(q))
+		synchronize_rcu();
+
+	blk_mq_unfreeze_queue(q);
+}
+EXPORT_SYMBOL(blk_set_preempt_only);
 
 /**
  * __blk_run_queue_uncond - run a queue whether or not it has been stopped
@@ -627,6 +666,9 @@ void blk_set_queue_dying(struct request_queue *q)
 		}
 		spin_unlock_irq(q->queue_lock);
 	}
+
+	/* Make blk_queue_enter() reexamine the DYING flag. */
+	wake_up_all(&q->mq_freeze_wq);
 }
 EXPORT_SYMBOL_GPL(blk_set_queue_dying);
 
@@ -691,6 +733,37 @@ void blk_cleanup_queue(struct request_queue *q)
 	/* @q won't process any more request, flush async actions */
 	del_timer_sync(&q->backing_dev_info->laptop_mode_wb_timer);
 	blk_sync_queue(q);
+
+	/*
+	 * I/O scheduler exit is only safe after the sysfs scheduler attribute
+	 * has been removed.
+	 */
+	WARN_ON_ONCE(q->kobj.state_in_sysfs);
+
+	/*
+	 * Since the I/O scheduler exit code may access cgroup information,
+	 * perform I/O scheduler exit before disassociating from the block
+	 * cgroup controller.
+	 */
+	if (q->elevator) {
+		ioc_clear_queue(q);
+		elevator_exit(q, q->elevator);
+		q->elevator = NULL;
+	}
+
+	/*
+	 * Remove all references to @q from the block cgroup controller before
+	 * restoring @q->queue_lock to avoid that restoring this pointer causes
+	 * e.g. blkcg_print_blkgs() to crash.
+	 */
+	blkcg_exit_queue(q);
+
+	/*
+	 * Since the cgroup code may dereference the @q->backing_dev_info
+	 * pointer, only decrease its reference count after having removed the
+	 * association with the block cgroup controller.
+	 */
+	bdi_put(q->backing_dev_info);
 
 	if (q->mq_ops)
 		blk_mq_free_queue(q);
@@ -787,14 +860,22 @@ struct request_queue *blk_alloc_queue(gfp_t gfp_mask)
 }
 EXPORT_SYMBOL(blk_alloc_queue);
 
-int blk_queue_enter(struct request_queue *q, bool nowait)
+int blk_queue_enter(struct request_queue *q, unsigned int op)
 {
 	while (true) {
 
-		if (percpu_ref_tryget_live(&q->q_usage_counter))
-			return 0;
+		rcu_read_lock_sched();
+		if (__percpu_ref_tryget_live(&q->q_usage_counter)) {
+			if (likely((op & REQ_PREEMPT) ||
+					!blk_queue_preempt_only(q))) {
+				rcu_read_unlock_sched();
+				return 0;
+			} else
+				percpu_ref_put(&q->q_usage_counter);
+		}
+		rcu_read_unlock_sched();
 
-		if (nowait)
+		if (op & REQ_NOWAIT)
 			return -EBUSY;
 
 		/*
@@ -807,8 +888,10 @@ int blk_queue_enter(struct request_queue *q, bool nowait)
 		smp_rmb();
 
 		wait_event(q->mq_freeze_wq,
-			   !atomic_read(&q->mq_freeze_depth) ||
-			   blk_queue_dying(q));
+			   (!atomic_read(&q->mq_freeze_depth) &&
+			   ((op & REQ_PREEMPT) ||
+			    !blk_queue_preempt_only(q))) ||
+			    blk_queue_dying(q));
 		if (blk_queue_dying(q))
 			return -ENODEV;
 	}
@@ -834,7 +917,7 @@ static void blk_rq_timed_out_timer(unsigned long data)
 	kblockd_schedule_work(&q->timeout_work);
 }
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 #define FG_CNT_DEF 20
 #define BOTH_CNT_DEF 10
 struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
@@ -866,7 +949,7 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 			(VM_MAX_READAHEAD * 1024) / PAGE_SIZE;
 	q->backing_dev_info->capabilities = BDI_CAP_CGROUP_WRITEBACK;
 	q->backing_dev_info->name = "block";
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 	q->fg_count_max = FG_CNT_DEF;
 	q->both_count_max = BOTH_CNT_DEF;
 	q->fg_count = FG_CNT_DEF;
@@ -878,7 +961,7 @@ struct request_queue *blk_alloc_queue_node(gfp_t gfp_mask, int node_id)
 	setup_timer(&q->timeout, blk_rq_timed_out_timer, (unsigned long) q);
 	INIT_WORK(&q->timeout_work, NULL);
 	INIT_LIST_HEAD(&q->queue_head);
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 	INIT_LIST_HEAD(&q->fg_head);
 	INIT_LIST_HEAD(&q->timeout_list);
 	INIT_LIST_HEAD(&q->icq_list);
@@ -1431,25 +1514,28 @@ static struct request *blk_old_get_request(struct request_queue *q,
 					   unsigned int op, gfp_t gfp_mask)
 {
 	struct request *rq;
+	int ret = 0;
 
 	WARN_ON_ONCE(q->mq_ops);
 
 	/* create ioc upfront */
 	create_io_context(gfp_mask, q->node);
 
+	ret = blk_queue_enter(q, (gfp_mask & __GFP_DIRECT_RECLAIM) ? op :
+			      op | REQ_NOWAIT);
+	if (ret)
+		return ERR_PTR(ret);
 	spin_lock_irq(q->queue_lock);
 	rq = get_request(q, op, NULL, gfp_mask);
 	if (IS_ERR(rq)) {
 		spin_unlock_irq(q->queue_lock);
+		blk_queue_exit(q);
 		return rq;
 	}
 
 	/* q->queue_lock is unlocked at this point */
 	rq->__data_len = 0;
 	rq->__sector = (sector_t) -1;
-#ifdef CONFIG_PFK
-	rq->__dun = 0;
-#endif
 	rq->bio = rq->biotail = NULL;
 	return rq;
 }
@@ -1463,6 +1549,7 @@ struct request *blk_get_request(struct request_queue *q, unsigned int op,
 		req = blk_mq_alloc_request(q, op,
 			(gfp_mask & __GFP_DIRECT_RECLAIM) ?
 				0 : BLK_MQ_REQ_NOWAIT);
+
 		if (!IS_ERR(req) && q->mq_ops->initialize_rq_fn)
 			q->mq_ops->initialize_rq_fn(req);
 	} else {
@@ -1615,6 +1702,7 @@ void __blk_put_request(struct request_queue *q, struct request *req)
 		blk_free_request(rl, req);
 		freed_request(rl, sync, rq_flags);
 		blk_put_rl(rl);
+		blk_queue_exit(q);
 	}
 }
 EXPORT_SYMBOL_GPL(__blk_put_request);
@@ -1673,9 +1761,6 @@ bool bio_attempt_front_merge(struct request_queue *q, struct request *req,
 	bio->bi_next = req->bio;
 	req->bio = bio;
 
-#ifdef CONFIG_PFK
-	req->__dun = bio->bi_iter.bi_dun;
-#endif
 	req->__sector = bio->bi_iter.bi_sector;
 	req->__data_len += bio->bi_iter.bi_size;
 	req->ioprio = ioprio_best(req->ioprio, bio_prio(bio));
@@ -1813,7 +1898,7 @@ out:
 void blk_init_request_from_bio(struct request *req, struct bio *bio)
 {
 	struct io_context *ioc = rq_ioc(bio);
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 	if (bio->bi_opf & REQ_FG)
 		req->cmd_flags |= REQ_FG;
 	if (bio->bi_opf & REQ_RAHEAD)
@@ -1827,9 +1912,6 @@ void blk_init_request_from_bio(struct request *req, struct bio *bio)
 	else
 		req->ioprio = IOPRIO_PRIO_VALUE(IOPRIO_CLASS_NONE, 0);
 	req->write_hint = bio->bi_write_hint;
-#ifdef CONFIG_PFK
-	req->__dun = bio->bi_iter.bi_dun;
-#endif
 	blk_rq_bio_prep(req->q, req, bio);
 }
 EXPORT_SYMBOL_GPL(blk_init_request_from_bio);
@@ -1904,8 +1986,10 @@ get_rq:
 	 * Grab a free request. This is might sleep but can not fail.
 	 * Returns with the queue unlocked.
 	 */
+	blk_queue_enter_live(q);
 	req = get_request(q, bio->bi_opf, bio, GFP_NOIO);
 	if (IS_ERR(req)) {
+		blk_queue_exit(q);
 		__wbt_done(q->rq_wb, wb_acct);
 		if (PTR_ERR(req) == -ENOMEM)
 			bio->bi_status = BLK_STS_RESOURCE;
@@ -2209,7 +2293,21 @@ blk_qc_t generic_make_request(struct bio *bio)
 	 * yet.
 	 */
 	struct bio_list bio_list_on_stack[2];
+	bool flags = 0;
+	struct request_queue *q = bio->bi_disk->queue;
 	blk_qc_t ret = BLK_QC_T_NONE;
+
+	if (bio->bi_opf & REQ_NOWAIT)
+		flags = BLK_MQ_REQ_NOWAIT;
+	if (bio_flagged(bio, BIO_QUEUE_ENTERED))
+		blk_queue_enter_live(q);
+	else if (blk_queue_enter(q, bio->bi_opf) < 0) {
+		if (!blk_queue_dying(q) && (bio->bi_opf & REQ_NOWAIT))
+			bio_wouldblock_error(bio);
+		else
+			bio_io_error(bio);
+		return ret;
+	}
 
 	if (!generic_make_request_checks(bio))
 		goto out;
@@ -2247,17 +2345,28 @@ blk_qc_t generic_make_request(struct bio *bio)
 	bio_list_init(&bio_list_on_stack[0]);
 	current->bio_list = bio_list_on_stack;
 	do {
-		struct request_queue *q = bio->bi_disk->queue;
+		bool enter_succeeded = true;
 
-		if (likely(blk_queue_enter(q, bio->bi_opf & REQ_NOWAIT) == 0)) {
+		if (unlikely(q != bio->bi_disk->queue)) {
+			if (q)
+				blk_queue_exit(q);
+			q = bio->bi_disk->queue;
+			flags = 0;
+			if (bio->bi_opf & REQ_NOWAIT)
+				flags = BLK_MQ_REQ_NOWAIT;
+			if (blk_queue_enter(q, bio->bi_opf) < 0)
+				enter_succeeded = false;
+		}
+
+		if (enter_succeeded) {
 			struct bio_list lower, same;
 
 			/* Create a fresh bio_list for all subordinate requests */
 			bio_list_on_stack[1] = bio_list_on_stack[0];
 			bio_list_init(&bio_list_on_stack[0]);
-			ret = q->make_request_fn(q, bio);
 
-			blk_queue_exit(q);
+			if (!blk_crypto_submit_bio(&bio))
+				ret = q->make_request_fn(q, bio);
 
 			/* sort new bios into those for a lower level
 			 * and those for the same level
@@ -2279,17 +2388,20 @@ blk_qc_t generic_make_request(struct bio *bio)
 				bio_wouldblock_error(bio);
 			else
 				bio_io_error(bio);
+			q = NULL;
 		}
 		bio = bio_list_pop(&bio_list_on_stack[0]);
 	} while (bio);
 	current->bio_list = NULL; /* deactivate */
 
 out:
+	if (q)
+		blk_queue_exit(q);
 	return ret;
 }
 EXPORT_SYMBOL(generic_make_request);
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
 #define SYSTEM_APP_UID 1000
 static bool is_system_uid(struct task_struct *t)
 {
@@ -2377,6 +2489,10 @@ static bool high_prio_for_task(struct task_struct *t)
  */
 blk_qc_t submit_bio(struct bio *bio)
 {
+	bool workingset_read = false;
+	unsigned long pflags;
+	blk_qc_t ret;
+
 	/*
 	 * If it's a regular read/write or a barrier with data attached,
 	 * go through the normal accounting stuff before submission.
@@ -2392,6 +2508,8 @@ blk_qc_t submit_bio(struct bio *bio)
 		if (op_is_write(bio_op(bio))) {
 			count_vm_events(PGPGOUT, count);
 		} else {
+			if (bio_flagged(bio, BIO_WORKINGSET))
+				workingset_read = true;
 			task_io_account_read(bio->bi_iter.bi_size);
 			count_vm_events(PGPGIN, count);
 		}
@@ -2405,17 +2523,33 @@ blk_qc_t submit_bio(struct bio *bio)
 				bio_devname(bio, b), count);
 		}
 	}
-/*dylanchang, 2019/4/30, add foreground task io opt*/
+
+
+
 #ifdef CONFIG_MEMPLUS
-	if (current_is_swapind())
-		bio->bi_opf |= REQ_FG;
-	else if (high_prio_for_task(current))
-		bio->bi_opf |= REQ_FG;
+        if (current_is_swapind())
+                bio->bi_opf |= REQ_FG;
+        else if (high_prio_for_task(current))
+                bio->bi_opf |= REQ_FG;
 #else
-	if (high_prio_for_task(current))
-		bio->bi_opf |= REQ_FG;
+        if (high_prio_for_task(current))
+                bio->bi_opf |= REQ_FG;
 #endif
-	return generic_make_request(bio);
+	/*
+	 * If we're reading data that is part of the userspace
+	 * workingset, count submission time as memory stall. When the
+	 * device is congested, or the submitting cgroup IO-throttled,
+	 * submission can be a significant part of overall IO time.
+	 */
+	if (workingset_read)
+		psi_memstall_enter(&pflags);
+
+	ret = generic_make_request(bio);
+
+	if (workingset_read)
+		psi_memstall_leave(&pflags);
+
+	return ret;
 }
 EXPORT_SYMBOL(submit_bio);
 
@@ -2693,6 +2827,10 @@ struct request *blk_peek_request(struct request_queue *q)
 			 * not be passed by new incoming requests
 			 */
 			rq->rq_flags |= RQF_STARTED;
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+			/* request start ktime */
+			rq->block_io_start = ktime_get();
+#endif
 			trace_block_rq_issue(q, rq);
 		}
 
@@ -2767,7 +2905,6 @@ static void blk_dequeue_request(struct request *rq)
 
 	list_del_init(&rq->queuelist);
 
-/*dylanchang, 2019/4/30, add foreground task io opt*/
 	if (sysctl_fg_io_opt && (rq->cmd_flags & REQ_FG))
 		list_del_init(&rq->fg_list);
 
@@ -2860,8 +2997,47 @@ bool blk_update_request(struct request *req, blk_status_t error,
 		unsigned int nr_bytes)
 {
 	int total_bytes;
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	/*request complete ktime*/
+	ktime_t now;
+	u64 delta_us;
+	char rwbs[RWBS_LEN];
+#endif
 
 	trace_block_rq_complete(req, blk_status_to_errno(error), nr_bytes);
+
+/*request complete ktime*/
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	if (req->tag >= 0 && req->block_io_start > 0) {
+		io_print_flag = false;
+		now = ktime_get();
+		delta_us = ktime_us_delta(now, req->block_io_start);
+		ohm_iolatency_record(req, nr_bytes, current_is_fg(), ktime_us_delta(now, req->block_io_start));
+		trace_block_time(req->q, req, delta_us, nr_bytes);
+
+		if (delta_us > PRINT_LATENCY) {
+			if ((ktime_to_ms(now)) < COUNT_TIME)
+				latency_count++;
+			else
+				latency_count = 0;
+
+			io_print_flag = true;
+			blk_fill_rwbs(rwbs, req->cmd_flags, nr_bytes);
+
+			/*if log is continuous, printk the first log.*/
+			if (!io_print_count)
+				pr_info("[IO Latency]UID:%u,slot:%d,outstanding=0x%lx,IO_Type:%s,Block IO/Flash Latency:(%llu/%llu)LBA:%llu,length:%d size:%d,count=%lld\n",
+						(from_kuid_munged(current_user_ns(), current_uid())),
+						req->tag, ufs_outstanding, rwbs, delta_us, req->flash_io_latency,
+						(unsigned long long)blk_rq_pos(req),
+						nr_bytes >> 9, blk_rq_bytes(req), latency_count);
+			io_print_count++;
+		}
+
+		if (!io_print_flag && io_print_count)
+			io_print_count = 0;
+	}
+#endif
 
 	if (!req->bio)
 		return false;
@@ -2907,13 +3083,8 @@ bool blk_update_request(struct request *req, blk_status_t error,
 	req->__data_len -= total_bytes;
 
 	/* update sector only for requests with clear definition of sector */
-	if (!blk_rq_is_passthrough(req)) {
+	if (!blk_rq_is_passthrough(req))
 		req->__sector += total_bytes >> 9;
-#ifdef CONFIG_PFK
-		if (req->__dun)
-			req->__dun += total_bytes >> 12;
-#endif
-	}
 
 	/* mixed attributes always follow the first bio */
 	if (req->rq_flags & RQF_MIXED_MERGE) {
@@ -3276,9 +3447,6 @@ static void __blk_rq_prep_clone(struct request *dst, struct request *src)
 {
 	dst->cpu = src->cpu;
 	dst->__sector = blk_rq_pos(src);
-#ifdef CONFIG_PFK
-	dst->__dun = blk_rq_dun(src);
-#endif
 	dst->__data_len = blk_rq_bytes(src);
 	if (src->rq_flags & RQF_SPECIAL_PAYLOAD) {
 		dst->rq_flags |= RQF_SPECIAL_PAYLOAD;
@@ -3775,6 +3943,12 @@ int __init blk_dev_init(void)
 #ifdef CONFIG_DEBUG_FS
 	blk_debugfs_root = debugfs_create_dir("block", NULL);
 #endif
+
+	if (bio_crypt_ctx_init() < 0)
+		panic("Failed to allocate mem for bio crypt ctxs\n");
+
+	if (blk_crypto_fallback_init() < 0)
+		panic("Failed to init blk-crypto-fallback\n");
 
 	return 0;
 }

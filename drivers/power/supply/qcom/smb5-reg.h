@@ -34,7 +34,6 @@
  *  CHGR Peripheral Registers  *
  ********************************/
 #define BATTERY_CHARGER_STATUS_1_REG		(CHGR_BASE + 0x06)
-/* @bsp, 2019/04/17 Battery & Charging porting */
 #define BVR_INITIAL_RAMP_BIT		BIT(7)
 #define ZERO_CHARGE_CURRENT_BIT		BIT(6)
 #define STEP_CHARGING_STATUS_SHIFT	3
@@ -161,7 +160,6 @@ enum {
 #define DCDC_OTG_CFG_REG			(DCDC_BASE + 0x53)
 #define OTG_EN_SRC_CFG_BIT			BIT(1)
 
-/*DCDC_VPH_TRACK_SEL*/
 #define DCDC_VPH_TRACK_SEL			(DCDC_BASE + 0x89)
 #define VPH_TRACK_SEL_MASK			GENMASK(1, 0)
 #define SEL_200MV				BIT(0)
@@ -175,6 +173,9 @@ enum {
 
 #define DCDC_ENG_SDCDC_CFG5_REG			(DCDC_BASE + 0xC4)
 #define ENG_SDCDC_BAT_HPWR_MASK			GENMASK(7, 6)
+#define SCHG_P_DCDC_VSYSMIN_CFG			(DCDC_BASE + 0x83)
+#define VSYS_MIN_3P2V	0x5
+
 enum {
 	BOOST_MODE_THRESH_3P3_V,
 	BOOST_MODE_THRESH_3P4_V = 0x40,
@@ -200,6 +201,7 @@ enum {
 #define SHIP_MODE_EN_BIT			BIT(0)
 
 #define BATIF_ADC_CHANNEL_EN_REG		(BATIF_BASE + 0x82)
+#define IBATT_CHANNEL_EN_BIT			BIT(6)
 #define CONN_THM_CHANNEL_EN_BIT			BIT(4)
 #define DIE_TEMP_CHANNEL_EN_BIT			BIT(2)
 #define MISC_THM_CHANNEL_EN_BIT			BIT(1)
@@ -269,6 +271,13 @@ enum {
 #define SINGLE_DECREMENT_BIT			BIT(1)
 #define SINGLE_INCREMENT_BIT			BIT(0)
 
+#define USBIN_ADAPTER_ALLOW_OVERRIDE_REG	(USBIN_BASE + 0x44)
+#define CONTINUOUS				BIT(3)
+#define FORCE_12V				BIT(2)
+#define FORCE_9V				BIT(1)
+#define FORCE_5V				BIT(0)
+#define FORCE_NULL				0
+
 #define USB_CMD_PULLDOWN_REG			(USBIN_BASE + 0x45)
 #define EN_PULLDOWN_USB_IN_BIT			BIT(0)
 
@@ -282,19 +291,6 @@ enum {
 	HVDCP_PULSE_COUNT_MAX_QC2_9V = 0x40,
 	HVDCP_PULSE_COUNT_MAX_QC2_12V = 0x80,
 	HVDCP_PULSE_COUNT_MAX_QC2_INVALID = 0xC0
-};
-
-#define USBIN_ADAPTER_ALLOW_CFG_REG		(USBIN_BASE + 0x60)
-enum {
-	USBIN_ADAPTER_ALLOW_5V		= 0,
-	USBIN_ADAPTER_ALLOW_9V		= 2,
-	USBIN_ADAPTER_ALLOW_5V_OR_9V	= 3,
-	USBIN_ADAPTER_ALLOW_12V		= 4,
-	USBIN_ADAPTER_ALLOW_5V_OR_12V	= 5,
-	USBIN_ADAPTER_ALLOW_9V_TO_12V	= 6,
-	USBIN_ADAPTER_ALLOW_5V_OR_9V_TO_12V = 7,
-	USBIN_ADAPTER_ALLOW_5V_TO_9V	= 8,
-	USBIN_ADAPTER_ALLOW_5V_TO_12V	= 12,
 };
 
 #define USBIN_OPTIONS_1_CFG_REG			(USBIN_BASE + 0x62)
@@ -326,7 +322,6 @@ enum {
 #define SUSPEND_ON_COLLAPSE_USBIN_BIT		BIT(7)
 #define USBIN_AICL_PERIODIC_RERUN_EN_BIT	BIT(4)
 #define USBIN_AICL_ADC_EN_BIT			BIT(3)
-/* @bsp, 2019/04/17 Battery & Charging porting */
 #define SUSPEND_ON_COLLAPSE_USBIN_BIT		BIT(7)
 #define USBIN_AICL_HDC_EN_BIT			BIT(6)
 #define USBIN_AICL_START_AT_MAX_BIT		BIT(5)
@@ -370,10 +365,11 @@ enum {
  *  TYPEC Peripheral Registers  *
  ********************************/
 #define TYPE_C_SNK_STATUS_REG			(TYPEC_BASE + 0x06)
-/* @bsp, 2019/04/17 Battery & Charging porting */
 #define DETECTED_SRC_TYPE_MASK			GENMASK(6, 0)
-/* add to fix huawei cable compatible issue */
 #define SNK_RP_RP_BIT				BIT(6)
+#define SNK_DAM_500MA_BIT			BIT(6)
+#define SNK_DAM_1500MA_BIT			BIT(5)
+#define SNK_DAM_3000MA_BIT			BIT(4)
 #define SNK_RP_STD_BIT				BIT(3)
 #define SNK_RP_1P5_BIT				BIT(2)
 #define SNK_RP_3P0_BIT				BIT(1)
@@ -390,8 +386,6 @@ enum {
 
 #define TYPE_C_STATE_MACHINE_STATUS_REG		(TYPEC_BASE + 0x09)
 #define TYPEC_ATTACH_DETACH_STATE_BIT		BIT(5)
-/* @bsp, 2019/04/17 Battery & Charging porting */
-/* add to fix huawei cable compatible issue */
 #define DEBUG_ACCESS_SNK_CFG_REG                (TYPEC_BASE + 0x4A)
 
 #define TYPE_C_MISC_STATUS_REG			(TYPEC_BASE + 0x0B)
@@ -523,6 +517,12 @@ enum {
 #define CONNECTOR_TEMP_RST_BIT			BIT(2)
 #define CONNECTOR_TEMP_UB_BIT			BIT(1)
 #define CONNECTOR_TEMP_LB_BIT			BIT(0)
+
+#define SMB_TEMP_STATUS_REG			(MISC_BASE + 0x0A)
+#define SMB_TEMP_SHDN_BIT			BIT(3)
+#define SMB_TEMP_RST_BIT			BIT(2)
+#define SMB_TEMP_UB_BIT				BIT(1)
+#define SMB_TEMP_LB_BIT				BIT(0)
 
 #define BARK_BITE_WDOG_PET_REG			(MISC_BASE + 0x43)
 #define BARK_BITE_WDOG_PET_BIT			BIT(0)

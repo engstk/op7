@@ -35,7 +35,7 @@ static struct mbox_client *cl;
 
 static DEFINE_MUTEX(qmp_debugfs_mutex);
 
-// tedlin@ASTI 2019/06/12 add for ddrfreq query (CONFIG_CONTROL_CENTER)
+#ifdef CONFIG_CONTROL_CENTER
 #define DDR_CONFIG_SIZE 12
 #define DDR_BUFFER_SIZE 64
 struct ddr_config {
@@ -55,8 +55,6 @@ struct ddr_config {
 	{ "{class:ddr, res:fixed, val: 1804}", 33 },
 	{ "{class:ddr, res:fixed, val: 2092}", 33 }
 };
-
-// tedlin@ASTI 2019/06/12 add for ddrfreq query (CONFIG_CONTROL_CENTER)
 void aop_lock_ddr_freq(int config)
 {
 	int target = 0;
@@ -95,6 +93,7 @@ void aop_lock_ddr_freq(int config)
 
 	mutex_unlock(&qmp_debugfs_mutex);
 }
+#endif
 
 static ssize_t aop_msg_write(struct file *file, const char __user *userstr,
 		size_t len, loff_t *pos)

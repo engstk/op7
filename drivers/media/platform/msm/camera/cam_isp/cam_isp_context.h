@@ -1,4 +1,4 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -199,6 +199,7 @@ struct cam_isp_context {
 	bool                             split_acquire;
 	bool                             irq_delay_detect;
 	uint64_t                         irq_timestamps;
+	bool                             hfr_mode;
 };
 
 /**

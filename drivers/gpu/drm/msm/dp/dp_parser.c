@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -187,6 +187,11 @@ static int dp_parser_misc(struct dp_parser *parser)
 
 	rc = of_property_read_u32(of_node,
 		"qcom,max-vdisplay", &parser->max_vdisplay);
+
+	parser->display_type = of_get_property(of_node,
+					"qcom,display-type", NULL);
+	if (!parser->display_type)
+		parser->display_type = "unknown";
 
 	return 0;
 }
@@ -452,7 +457,7 @@ static int dp_parser_regulator(struct dp_parser *parser)
 	struct platform_device *pdev = parser->pdev;
 
 	/* Parse the regulator information */
-	for (i = DP_CORE_PM; i < DP_MAX_PM; i++) {
+	for (i = DP_CORE_PM; i <= DP_PHY_PM; i++) {
 		rc = dp_parser_get_vreg(parser, i);
 		if (rc) {
 			pr_err("get_dt_vreg_data failed for %s. rc=%d\n",
@@ -726,6 +731,8 @@ static int dp_parser_mst(struct dp_parser *parser)
 
 	parser->has_mst = of_property_read_bool(dev->of_node,
 			"qcom,mst-enable");
+	parser->no_mst_encoder = of_property_read_bool(dev->of_node,
+			"qcom,no-mst-encoder");
 	parser->has_mst_sideband = parser->has_mst;
 
 	pr_debug("mst parsing successful. mst:%d\n", parser->has_mst);
@@ -734,6 +741,12 @@ static int dp_parser_mst(struct dp_parser *parser)
 		of_property_read_u32_index(dev->of_node,
 				"qcom,mst-fixed-topology-ports", i,
 				&parser->mst_fixed_port[i]);
+		of_property_read_string_index(
+				dev->of_node,
+				"qcom,mst-fixed-topology-display-types", i,
+				&parser->mst_fixed_display_type[i]);
+		if (!parser->mst_fixed_display_type[i])
+			parser->mst_fixed_display_type[i] = "unknown";
 	}
 
 	return 0;

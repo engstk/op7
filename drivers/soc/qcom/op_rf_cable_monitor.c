@@ -401,6 +401,53 @@ err_pinctrl_get:
 }
 
 #ifdef SDX5X_RF_CABLE_UEVENT
+static bool is_oem_dump = true;
+static ssize_t oem_dump_show(struct device *pdev, struct device_attribute *attr,
+		char *buf)
+{
+	char *state = "DISABLE";
+
+	if (is_oem_dump == true)
+		state = "ENABLE";
+
+	return snprintf(buf, sizeof(state), "%s\n", state);
+}
+static ssize_t oem_dump_store(struct device *dev, struct device_attribute *attr,
+		const char *buffer, size_t size)
+{
+	int val;
+	int ret = 0;
+
+	char *oem_dump_on[2] = { "OEM_DUMP=ENABLE", NULL };
+	char *oem_dump_off[2] = { "OEM_DUMP=DISABLE", NULL };
+
+	ret = kstrtoint(buffer, 10, &val);
+	if (ret != 0) {
+		pr_err("%s: invalid content: '%s', length = %zd\n", __func__,
+				buffer, size);
+		return ret;
+	}
+
+	if (esoc_ssr_reason_feature_enable == 1) {
+		if (val) {
+			kobject_uevent_env(&sdx5x_rf_device->kobj,
+					KOBJ_CHANGE, oem_dump_on);
+			is_oem_dump = true;
+			pr_err("%s: sent uevent %s\n", __func__,
+					oem_dump_on[0]);
+		} else {
+			kobject_uevent_env(&sdx5x_rf_device->kobj,
+					KOBJ_CHANGE, oem_dump_off);
+			pr_err("%s: sent uevent %s\n", __func__,
+					oem_dump_off[0]);
+			is_oem_dump = false;
+		}
+	}
+	return size;
+
+}
+static DEVICE_ATTR(oem_dump, 0644, oem_dump_show, oem_dump_store);
+
 static ssize_t state_show(struct device *pdev, struct device_attribute *attr,
 		char *buf)
 {
@@ -431,6 +478,7 @@ static DEVICE_ATTR(state, 0644, state_show, state_store);
 
 static struct device_attribute *sdx5x_rf_attributes[] = {
 	&dev_attr_state,
+	&dev_attr_oem_dump,
 	NULL
 };
 #endif

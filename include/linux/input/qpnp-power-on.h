@@ -53,7 +53,6 @@ enum pon_power_off_type {
 	PON_POWER_OFF_MAX_TYPE		= 0x10,
 };
 
-/* @bsp, 20190417 Battery & Charging porting */
 struct qpnp_pon {
 	struct device		*dev;
 	struct regmap		*regmap;
@@ -63,6 +62,7 @@ struct qpnp_pon {
 	struct list_head	list;
 	struct delayed_work	bark_work;
 	struct delayed_work     press_work;
+	struct delayed_work press_pwr;
 	struct work_struct  up_work;
 	atomic_t	   press_count;
 	struct dentry		*debugfs;
@@ -97,6 +97,8 @@ struct qpnp_pon {
 	ktime_t			kpdpwr_last_release_time;
 	struct notifier_block   pon_nb;
 	bool			legacy_hard_reset_offset;
+	struct mutex		restore_lock;
+	struct list_head	restore_regs;
 };
 
 enum pon_restart_reason {
@@ -107,20 +109,14 @@ enum pon_restart_reason {
 	PON_RESTART_REASON_DMVERITY_CORRUPTED	= 0x04,
 	PON_RESTART_REASON_DMVERITY_ENFORCE	= 0x05,
 	PON_RESTART_REASON_KEYS_CLEAR		= 0x06,
-
-	PON_RESTART_REASON_AGING		= 0x07,
-	PON_RESTART_REASON_REBOOT		= 0x10,
-	PON_RESTART_REASON_FACTORY		= 0x11,
-	PON_RESTART_REASON_WLAN 		= 0x12,
-	PON_RESTART_REASON_RF			= 0x13,
-	PON_RESTART_REASON_MOS			= 0x14,
-	PON_RESTART_REASON_KERNEL		= 0x15,
-	PON_RESTART_REASON_ANDROID		= 0x16,
-	PON_RESTART_REASON_MODEM		= 0x17,
-	PON_RESTART_REASON_PANIC		= 0x18,
+	PON_RESTART_REASON_FACTORY		= 0x21,
+	PON_RESTART_REASON_RF			= 0x22,
+	PON_RESTART_BOOTLOADER_RECOVERY		= 0X23,
+	PON_RESTART_REASON_SBL_DDRTEST		= 0x24,
+	PON_RESTART_REASON_SBL_DDR_CUS		= 0x25,
+	PON_RESTART_REASON_MEM_AGING		= 0x26,
 };
 
-/* Define OEM reboot mode magic*/
 #define AGING_MODE		0x77665510
 #define FACTORY_MODE	0x77665504
 #define WLAN_MODE		0x77665505

@@ -79,40 +79,30 @@ static int __init device_info_init(void)
 /*device info init to black*/
 static void  pstore_device_info_init(void )
 {
-    size_t oldsize;
-    size_t size =0;
-    unsigned long flags;
+	size_t oldsize, size;
+	struct ramoops_context *cxt = psinfo->data;
+	struct pstore_record record;
 
-    struct ramoops_context *cxt = psinfo->data;
-    struct pstore_record record;
+	if (psinfo == NULL)
+		return;
 
-    if (psinfo == NULL)
-        return;
-
-    size = cxt->device_info_size;
+	size = cxt->device_info_size;
 
 	pstore_record_init(&record, psinfo);
 	record.type = PSTORE_TYPE_DEVICE_INFO;
-    record.buf = psinfo->buf;
-    record.size = size;
+	record.buf = psinfo->buf;
+	record.size = size;
 
-    oldsize = psinfo->bufsize;
+	oldsize = psinfo->bufsize;
 
 
-    if (size > psinfo->bufsize)
-        size = psinfo->bufsize;
+	if (size > psinfo->bufsize)
+		size = psinfo->bufsize;
 
-    if (oops_in_progress) {
-        if (!spin_trylock_irqsave(&psinfo->buf_lock, flags))
-            return;
-    } else {
-        spin_lock_irqsave(&psinfo->buf_lock, flags);
-    }
-    memset(record.buf, ' ', size);
-    psinfo->write(&record);
-    spin_unlock_irqrestore(&psinfo->buf_lock, flags);
+	memset(record.buf, ' ', size);
+	psinfo->write(&record);
 
-    psinfo->bufsize = oldsize ;
+	psinfo->bufsize = oldsize;
 }
 
 static void pstore_write_device_info(const char *s, unsigned c)
@@ -125,7 +115,6 @@ static void pstore_write_device_info(const char *s, unsigned c)
 
 	while (s < e) {
 		struct pstore_record record;
-		unsigned long flags;
 
 		pstore_record_init(&record, psinfo);
 		record.type = PSTORE_TYPE_DEVICE_INFO;
@@ -133,16 +122,9 @@ static void pstore_write_device_info(const char *s, unsigned c)
 		if (c > psinfo->bufsize)
 			c = psinfo->bufsize;
 
-		if (oops_in_progress) {
-			if (!spin_trylock_irqsave(&psinfo->buf_lock, flags))
-				break;
-		} else {
-			spin_lock_irqsave(&psinfo->buf_lock, flags);
-		}
 		record.buf = (char *)s;
 		record.size = c;
 		psinfo->write(&record);
-		spin_unlock_irqrestore(&psinfo->buf_lock, flags);
 		s += c;
 		c = e - s;
 	}

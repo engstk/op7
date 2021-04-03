@@ -173,6 +173,75 @@ TRACE_EVENT(cpu_frequency_limits,
 		  (unsigned long)__entry->cpu_id)
 );
 
+TRACE_EVENT(find_freq,
+
+	TP_PROTO(unsigned int target_idx, unsigned int target_freq, unsigned int final_idx,
+		unsigned int final_freq, int cpu, bool op_enable, int dp_level_mode, int dp_level),
+
+	TP_ARGS(target_idx, target_freq, final_idx, final_freq, cpu, op_enable, dp_level_mode, dp_level),
+
+	TP_STRUCT__entry(
+		__field(u32, target_freq)
+		__field(u32, target_idx)
+		__field(u32, final_idx)
+		__field(u32, final_freq)
+		__field(int, cpu)
+		__field(bool, op_enable)
+		__field(int, dp_level_mode)
+		__field(int, dp_level)
+	),
+
+	TP_fast_assign(
+		__entry->target_idx = target_idx;
+		__entry->target_freq = target_freq;
+		__entry->final_idx = final_idx;
+		__entry->final_freq = final_freq;
+		__entry->cpu = cpu;
+		__entry->op_enable = op_enable;
+		__entry->dp_level_mode = dp_level_mode;
+		__entry->dp_level = dp_level;
+	),
+
+	TP_printk(
+		"target[%lu]=%lu final[%lu]=%lu cpu=%d op_enable=%d dp_level_mod=%d dp_level=%d",
+		(unsigned long)__entry->target_idx,
+		(unsigned long)__entry->target_freq,
+		(unsigned long)__entry->final_idx,
+		(unsigned long)__entry->final_freq,
+		(unsigned long)__entry->cpu,
+		 __entry->op_enable, __entry->dp_level_mode, __entry->dp_level)
+);
+
+TRACE_EVENT(cpu_frequency_select,
+
+	TP_PROTO(unsigned int target_freq, unsigned int final_freq,
+		unsigned int index, int cpu, int num),
+
+	TP_ARGS(target_freq, final_freq, index, cpu, num),
+
+	TP_STRUCT__entry(
+		__field(u32, target_freq)
+		__field(u32, final_freq)
+		__field(u32, index)
+		__field(int, cpu)
+		__field(int, num)
+	),
+
+	TP_fast_assign(
+		__entry->target_freq = target_freq;
+		__entry->final_freq = final_freq;
+		__entry->index = index;
+		__entry->cpu = cpu;
+		__entry->num = num;
+	),
+
+	TP_printk("target=%lu final=%lu index=%lu cpu=%d num=%d",
+		  (unsigned long)__entry->target_freq,
+		  (unsigned long)__entry->final_freq,
+		  (unsigned long)__entry->index,
+				 __entry->cpu, __entry->num)
+);
+
 TRACE_EVENT(cpu_frequency_switch_start,
 
 	TP_PROTO(unsigned int start_freq, unsigned int end_freq,
@@ -325,6 +394,7 @@ DEFINE_EVENT(wakeup_source, wakeup_source_deactivate,
  * The clock events are used for clock enable/disable and for
  *  clock rate change
  */
+#if defined(CONFIG_COMMON_CLK_MSM)
 DECLARE_EVENT_CLASS(clock,
 
 	TP_PROTO(const char *name, unsigned int state, unsigned int cpu_id),
@@ -368,6 +438,13 @@ DEFINE_EVENT(clock, clock_set_rate,
 	TP_ARGS(name, state, cpu_id)
 );
 
+DEFINE_EVENT(clock, clock_set_rate_complete,
+
+	TP_PROTO(const char *name, unsigned int state, unsigned int cpu_id),
+
+	TP_ARGS(name, state, cpu_id)
+);
+
 TRACE_EVENT(clock_set_parent,
 
 	TP_PROTO(const char *name, const char *parent_name),
@@ -386,6 +463,32 @@ TRACE_EVENT(clock_set_parent,
 
 	TP_printk("%s parent=%s", __get_str(name), __get_str(parent_name))
 );
+
+TRACE_EVENT(clock_state,
+
+	TP_PROTO(const char *name, unsigned long prepare_count,
+		unsigned long count, unsigned long rate),
+
+	TP_ARGS(name, prepare_count, count, rate),
+
+	TP_STRUCT__entry(
+		__string(name,			name)
+		__field(unsigned long,		prepare_count)
+		__field(unsigned long,		count)
+		__field(unsigned long,		rate)
+	),
+
+	TP_fast_assign(
+		__assign_str(name, name);
+		__entry->prepare_count = prepare_count;
+		__entry->count = count;
+		__entry->rate = rate;
+	),
+	TP_printk("%s\t[%lu:%lu]\t%lu", __get_str(name), __entry->prepare_count,
+					 __entry->count, __entry->rate)
+
+);
+#endif /* CONFIG_COMMON_CLK_MSM */
 
 /*
  * The power domain events are used for power domains transitions

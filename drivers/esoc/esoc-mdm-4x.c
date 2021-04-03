@@ -1,4 +1,4 @@
-/* Copyright (c) 2014-2015, 2017-2018, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2014-2015, 2017-2018, 2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -18,6 +18,7 @@
 #include "esoc-mdm.h"
 #include <linux/project_info.h>
 #include <linux/oneplus/boot_mode.h>
+#include <soc/qcom/subsystem_restart.h>
 
 enum gpio_update_config {
 	GPIO_UPDATE_BOOTING_CONFIG = 1,
@@ -302,7 +303,21 @@ static int mdm_cmd_exe(enum esoc_cmd cmd, struct esoc_clink *esoc)
 			gpio_set_value(MDM_GPIO(mdm, AP2MDM_ERRFATAL), 1);
 			dev_dbg(mdm->dev,
 				"set ap2mdm errfatal to force reset\n");
-			msleep(mdm->ramdump_delay_ms);
+			/*
+			 * The 3000ms is there to allow for SDI/ramdump path to complete on the sdx55 side.
+			 * While you have disabled ramdump,
+			 * it is still dangerous to reduce the time because any timeout due to delay shortening
+			 * in this case will result in booting failure of the sdx55 most likely.
+			 * We will not test for how much time it takes for sdx55 to finish the SDI path in the
+			 * 3000ms range as a performance metric.
+			 * - Reducing it to 1.7 sec will minimize other impact or in case SSR dump is enabled
+			 *   by mistake.
+			 * - If SSR dump is enabled, 3 sec delay should be remained.
+			 */
+			if (oem_get_download_mode())
+				msleep(mdm->ramdump_delay_ms);
+			else
+				msleep(1700);
 		}
 		break;
 	case ESOC_EXE_DEBUG:
@@ -394,6 +409,9 @@ static void mdm_get_restart_reason(struct work_struct *work)
 		if (!ret) {
 			esoc_mdm_log("restart reason is %s\n", sfr_buf);
 			dev_err(dev, "mdm restart reason is %s\n", sfr_buf);
+			dev_err(dev, "[OEM_MDM] SSR: send esoc crash reason\n");
+			subsys_store_crash_reason(mdm->esoc->subsys_dev, sfr_buf);
+			subsys_send_uevent_notify(&mdm->esoc->subsys);
 			break;
 		}
 		msleep(SFR_RETRY_INTERVAL);
@@ -405,14 +423,9 @@ static void mdm_get_restart_reason(struct work_struct *work)
 	}
 	mdm->get_restart_reason = false;
 
-	if (is_oem_esoc_ssr() == 1) {
-		oem_set_esoc_ssr(0);
-	}
-
 	if (oem_get_download_mode()) {
 		char detial_buf[] = "\nSDX5x esoc0 modem crash";
 
-		oem_set_esoc_ssr(0);
 		if ((strlen(sfr_buf)+sizeof(detial_buf)) < RD_BUF_SIZE)
 			strncat(sfr_buf, detial_buf, strlen(detial_buf));
 
@@ -422,7 +435,10 @@ static void mdm_get_restart_reason(struct work_struct *work)
 		"[OEM_MDM] Trigger panic by OEM to get SDX5x dump!\n");
 		msleep(5000);
 		mdm_power_down(mdm);
+		oem_set_esoc_ssr(0);
 		panic(sfr_buf);
+	} else if (is_oem_esoc_ssr() == 1) {
+		oem_set_esoc_ssr(0);
 	}
 }
 
@@ -432,6 +448,13 @@ void mdm_wait_for_status_low(struct mdm_ctrl *mdm, bool atomic)
 	uint64_t now;
 
 	esoc_mdm_log("Waiting for MDM2AP_STATUS to go LOW\n");
+	// Optimize esoc SSR time
+	if (!oem_get_download_mode() && gpio_get_value(MDM_GPIO(mdm, MDM2AP_STATUS)) != 0) {
+		esoc_mdm_log("[OEM] mdm_toggle_soft_reset() directly to optimize esoc SSR time\n");
+		dev_err(mdm->dev, "[OEM] mdm_toggle_soft_reset() directly to optimize esoc SSR time\n");
+		mdm_toggle_soft_reset(mdm, atomic);
+	}
+
 	timeout = local_clock();
 	do_div(timeout, NSEC_PER_MSEC);
 	timeout += MDM_MODEM_TIMEOUT;
@@ -1122,6 +1145,26 @@ static int sdxprairie_setup_hw(struct mdm_ctrl *mdm,
 	return ret;
 }
 
+static int marmot_setup_hw(struct mdm_ctrl *mdm,
+					const struct mdm_ops *ops,
+					struct platform_device *pdev)
+{
+	int ret;
+
+	/* Same configuration as that of sdx50, except for the name */
+	ret = sdx50m_setup_hw(mdm, ops, pdev);
+	if (ret) {
+		dev_err(mdm->dev, "Hardware setup failed for marmot\n");
+		esoc_mdm_log("Hardware setup failed for marmot\n");
+		return ret;
+	}
+
+	mdm->esoc->name = MARMOT_LABEL;
+	esoc_mdm_log("Hardware setup done for marmot\n");
+
+	return ret;
+}
+
 static struct esoc_clink_ops mdm_cops = {
 	.cmd_exe = mdm_cmd_exe,
 	.get_status = mdm_get_status,
@@ -1147,6 +1190,12 @@ static struct mdm_ops sdxprairie_ops = {
 	.pon_ops = &sdx50m_pon_ops,
 };
 
+static struct mdm_ops marmot_ops = {
+	.clink_ops = &mdm_cops,
+	.config_hw = marmot_setup_hw,
+	.pon_ops = &sdxmarmot_pon_ops,
+};
+
 static const struct of_device_id mdm_dt_match[] = {
 	{ .compatible = "qcom,ext-mdm9x55",
 		.data = &mdm9x55_ops, },
@@ -1154,6 +1203,8 @@ static const struct of_device_id mdm_dt_match[] = {
 		.data = &sdx50m_ops, },
 	{ .compatible = "qcom,ext-sdxprairie",
 		.data = &sdxprairie_ops, },
+	{ .compatible = "qcom,ext-marmot",
+		.data = &marmot_ops, },
 	{},
 };
 MODULE_DEVICE_TABLE(of, mdm_dt_match);

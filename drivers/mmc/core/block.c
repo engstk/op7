@@ -54,6 +54,7 @@
 #include "block.h"
 #include "core.h"
 #include "card.h"
+#include "crypto.h"
 #include "host.h"
 #include "bus.h"
 #include "mmc_ops.h"
@@ -2129,6 +2130,8 @@ static void mmc_blk_data_prep(struct mmc_queue *mq, struct mmc_queue_req *mqrq,
 
 	memset(brq, 0, sizeof(struct mmc_blk_request));
 
+	mmc_crypto_prepare_req(mqrq);
+
 	brq->mrq.data = &brq->data;
 
 	brq->stop.opcode = MMC_STOP_TRANSMISSION;
@@ -3794,7 +3797,7 @@ static struct mmc_blk_data *mmc_blk_alloc_req(struct mmc_card *card,
 	INIT_LIST_HEAD(&md->part);
 	md->usage = 1;
 
-	ret = mmc_init_queue(&md->queue, card, &md->lock, subname, area_type);
+	ret = mmc_init_queue(&md->queue, card, NULL, subname, area_type);
 	if (ret)
 		goto err_putdisk;
 
@@ -3963,7 +3966,6 @@ static void mmc_blk_remove_req(struct mmc_blk_data *md)
 		queue_flag_set(QUEUE_FLAG_BYPASS, md->queue.queue);
 		spin_unlock_irq(md->queue.queue->queue_lock);
 		blk_set_queue_dying(md->queue.queue);
-		mmc_cleanup_queue(&md->queue);
 
 		if (md->flags & MMC_BLK_CMD_QUEUE)
 			mmc_cmdq_clean(&md->queue, card);
@@ -3984,6 +3986,7 @@ static void mmc_blk_remove_req(struct mmc_blk_data *md)
 
 			del_gendisk(md->disk);
 		}
+		mmc_cleanup_queue(&md->queue);
 		mmc_blk_put(md);
 	}
 }

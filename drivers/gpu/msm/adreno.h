@@ -1,4 +1,4 @@
-/* Copyright (c) 2008-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2008-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -212,6 +212,7 @@ enum adreno_gpurev {
 	ADRENO_REV_A418 = 418,
 	ADRENO_REV_A420 = 420,
 	ADRENO_REV_A430 = 430,
+	ADRENO_REV_A504 = 504,
 	ADRENO_REV_A505 = 505,
 	ADRENO_REV_A506 = 506,
 	ADRENO_REV_A508 = 508,
@@ -288,8 +289,8 @@ enum adreno_preempt_states {
 /**
  * struct adreno_preemption
  * @state: The current state of preemption
- * @counters: Memory descriptor for the memory where the GPU writes the
- * preemption counters on switch
+ * @scratch: Memory descriptor for the memory where the GPU writes the
+ * current ctxt record address and preemption counters on switch
  * @timer: A timer to make sure preemption doesn't stall
  * @work: A work struct for the preemption worker (for 5XX)
  * @token_submit: Indicates if a preempt token has been submitted in
@@ -301,7 +302,7 @@ enum adreno_preempt_states {
  */
 struct adreno_preemption {
 	atomic_t state;
-	struct kgsl_memdesc counters;
+	struct kgsl_memdesc scratch;
 	struct timer_list timer;
 	struct work_struct work;
 	bool token_submit;
@@ -626,7 +627,6 @@ struct adreno_device {
  * attached and enabled
  * @ADRENO_DEVICE_CACHE_FLUSH_TS_SUSPENDED - Set if a CACHE_FLUSH_TS irq storm
  * is in progress
- * @ADRENO_DEVICE_HARD_RESET - Set if soft reset fails and hard reset is needed
  */
 enum adreno_device_flags {
 	ADRENO_DEVICE_PWRON = 0,
@@ -643,8 +643,7 @@ enum adreno_device_flags {
 	ADRENO_DEVICE_GPMU_INITIALIZED = 11,
 	ADRENO_DEVICE_ISDB_ENABLED = 12,
 	ADRENO_DEVICE_CACHE_FLUSH_TS_SUSPENDED = 13,
-	ADRENO_DEVICE_HARD_RESET = 14,
-	ADRENO_DEVICE_CORESIGHT_CX = 16,
+	ADRENO_DEVICE_CORESIGHT_CX = 14,
 };
 
 /**
@@ -1013,6 +1012,7 @@ struct adreno_gpudev {
 				struct adreno_device *adreno_dev,
 				unsigned int *cmds);
 	int (*preemption_init)(struct adreno_device *);
+	void (*preemption_close)(struct adreno_device *);
 	void (*preemption_schedule)(struct adreno_device *);
 	int (*preemption_context_init)(struct kgsl_context *);
 	void (*preemption_context_destroy)(struct kgsl_context *);
@@ -1209,6 +1209,7 @@ void adreno_cx_misc_regwrite(struct adreno_device *adreno_dev,
 void adreno_cx_misc_regrmw(struct adreno_device *adreno_dev,
 		unsigned int offsetwords,
 		unsigned int mask, unsigned int bits);
+u32 adreno_get_ucode_version(const u32 *data);
 
 
 #define ADRENO_TARGET(_name, _id) \
@@ -1275,6 +1276,7 @@ static inline int adreno_is_a5xx(struct adreno_device *adreno_dev)
 			ADRENO_GPUREV(adreno_dev) < 600;
 }
 
+ADRENO_TARGET(a504, ADRENO_REV_A504)
 ADRENO_TARGET(a505, ADRENO_REV_A505)
 ADRENO_TARGET(a506, ADRENO_REV_A506)
 ADRENO_TARGET(a508, ADRENO_REV_A508)
@@ -1301,9 +1303,9 @@ static inline int adreno_is_a530v3(struct adreno_device *adreno_dev)
 		(ADRENO_CHIPID_PATCH(adreno_dev->chipid) == 2);
 }
 
-static inline int adreno_is_a505_or_a506(struct adreno_device *adreno_dev)
+static inline int adreno_is_a504_to_a506(struct adreno_device *adreno_dev)
 {
-	return ADRENO_GPUREV(adreno_dev) >= 505 &&
+	return ADRENO_GPUREV(adreno_dev) >= 504 &&
 			ADRENO_GPUREV(adreno_dev) <= 506;
 }
 

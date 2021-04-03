@@ -228,7 +228,6 @@
 
 /*------------------------------------------------------------------------*/
 
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 #define PAGE_CACHE_SIZE PAGE_SIZE
 #define FSG_DRIVER_DESC		"Mass Storage Function"
 #define FSG_DRIVER_VERSION	"2009/09/11"
@@ -263,7 +262,7 @@ struct fsg_common;
 struct fsg_common {
 	struct usb_gadget	*gadget;
 	struct usb_composite_dev *cdev;
-	struct fsg_dev		*fsg, *new_fsg;
+	struct fsg_dev		*fsg;
 	wait_queue_head_t	io_wait;
 	wait_queue_head_t	fsg_wait;
 
@@ -292,6 +291,7 @@ struct fsg_common {
 	unsigned int		bulk_out_maxpacket;
 	enum fsg_state		state;		/* For exception handling */
 	unsigned int		exception_req_tag;
+	void			*exception_arg;
 
 	enum data_direction	data_dir;
 	u32			data_size;
@@ -395,7 +395,8 @@ static int fsg_set_halt(struct fsg_dev *fsg, struct usb_ep *ep)
 
 /* These routines may be called in process context or in_irq */
 
-static void raise_exception(struct fsg_common *common, enum fsg_state new_state)
+static void __raise_exception(struct fsg_common *common, enum fsg_state new_state,
+			      void *arg)
 {
 	unsigned long		flags;
 
@@ -408,6 +409,7 @@ static void raise_exception(struct fsg_common *common, enum fsg_state new_state)
 	if (common->state <= new_state) {
 		common->exception_req_tag = common->ep0_req_tag;
 		common->state = new_state;
+		common->exception_arg = arg;
 		if (common->thread_task)
 			send_sig_info(SIGUSR1, SEND_SIG_FORCED,
 				      common->thread_task);
@@ -415,6 +417,10 @@ static void raise_exception(struct fsg_common *common, enum fsg_state new_state)
 	spin_unlock_irqrestore(&common->lock, flags);
 }
 
+static void raise_exception(struct fsg_common *common, enum fsg_state new_state)
+{
+	__raise_exception(common, new_state, NULL);
+}
 
 /*-------------------------------------------------------------------------*/
 
@@ -1178,7 +1184,6 @@ static int do_read_header(struct fsg_common *common, struct fsg_buffhd *bh)
 	return 8;
 }
 
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 static void _lba_to_msf(u8 *buf, int lba)
 {
 	lba += 150;
@@ -1429,7 +1434,6 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	int		start_track = common->cmnd[6];
 	u8		*buf = (u8 *)bh->buf;
 
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 	int format = (common->cmnd[9] & 0xC0) >> 6;
 
 	if ((common->cmnd[1] & ~0x02) != 0 ||	/* Mask away MSF */
@@ -1437,8 +1441,6 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 		return -EINVAL;
 	}
-
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 	if (format == 2)
 		return _read_toc_raw(common, bh);
 
@@ -2179,15 +2181,12 @@ static int do_scsi_command(struct fsg_common *common)
 			goto unknown_cmnd;
 		common->data_size_from_cmnd =
 			get_unaligned_be16(&common->cmnd[7]);
-
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 		reply = check_command(common, 10, DATA_DIR_TO_HOST,
 				      (0xf<<6) | (1<<1), 1,
 				      "READ TOC");
 		if (reply == 0)
 			reply = do_read_toc(common, bh);
 		break;
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 	case READ_CD:
 		common->data_size_from_cmnd = ((common->cmnd[6] << 16)
 						| (common->cmnd[7] << 8)
@@ -2523,7 +2522,7 @@ static int fsg_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 	struct fsg_dev *fsg = fsg_from_func(f);
 	int rc;
 
-	fsg->common->new_fsg = fsg;
+	fsg->common->fsg = fsg;
 
 	/* prevents usb LPM until thread runs to completion */
 	usb_gadget_autopm_get_async(fsg->common->gadget);
@@ -2554,7 +2553,7 @@ static int fsg_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 	usb_endpoint_maxp(fsg->bulk_out->desc);
 	clear_bit(IGNORE_BULK_OUT, &fsg->atomic_bitflags);
 
-	raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
+	__raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE, fsg);
 	return USB_GADGET_DELAYED_STATUS;
 
 reset_bulk_int:
@@ -2582,9 +2581,8 @@ static void fsg_disable(struct usb_function *f)
 		fsg->bulk_out_enabled = 0;
 	}
 
-	fsg->common->new_fsg = NULL;
-	raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
-	/* allow usb LPM after eps are disabled */
+	fsg->common->fsg = NULL;
+	__raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE, NULL);
 	usb_gadget_autopm_put_async(fsg->common->gadget);
 }
 
@@ -2598,6 +2596,7 @@ static void handle_exception(struct fsg_common *common)
 	enum fsg_state		old_state;
 	struct fsg_lun		*curlun;
 	unsigned int		exception_req_tag;
+	struct fsg_dev		*new_fsg;
 
 	/*
 	 * Clear the existing signals.  Anything but SIGUSR1 is converted
@@ -2651,6 +2650,7 @@ static void handle_exception(struct fsg_common *common)
 	common->next_buffhd_to_fill = &common->buffhds[0];
 	common->next_buffhd_to_drain = &common->buffhds[0];
 	exception_req_tag = common->exception_req_tag;
+	new_fsg = common->exception_arg;
 	old_state = common->state;
 	common->state = FSG_STATE_NORMAL;
 
@@ -2704,8 +2704,8 @@ static void handle_exception(struct fsg_common *common)
 		break;
 
 	case FSG_STATE_CONFIG_CHANGE:
-		do_set_interface(common, common->new_fsg);
-		if (common->new_fsg)
+		do_set_interface(common, new_fsg);
+		if (new_fsg)
 			usb_composite_setup_continue(common->cdev);
 		break;
 
@@ -3157,7 +3157,6 @@ void fsg_common_set_inquiry_string(struct fsg_common *common, const char *vn,
 		     ? "File-CD Gadget"
 		     : "File-Stor Gadget"),
 		 i);
-/* @BSP, 2016/09/21, CD-ROM and VID customized */
 	snprintf(common->inquiry_string,
 		sizeof(common->inquiry_string),
 		"%s",  "OnePlus Device Driver");
@@ -3300,8 +3299,7 @@ static void fsg_unbind(struct usb_configuration *c, struct usb_function *f)
 
 	DBG(fsg, "unbind\n");
 	if (fsg->common->fsg == fsg) {
-		fsg->common->new_fsg = NULL;
-		raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE);
+		__raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE, NULL);
 		/* FIXME: make interruptible or killable somehow? */
 		wait_event(common->fsg_wait, common->fsg != fsg);
 	}
@@ -3669,7 +3667,6 @@ static struct usb_function_instance *fsg_alloc_inst(void)
 
 	memset(&config, 0, sizeof(config));
 	config.removable = true;
-/*enable cdrom config to read usb_driver.iso in PC;CD-ROM and VID customized*/
 	config.cdrom = true;
 	config.ro = true;
 	rc = fsg_common_create_lun(opts->common, &config, 0, "lun.0",

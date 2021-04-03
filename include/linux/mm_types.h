@@ -240,6 +240,11 @@ struct page_frag_cache {
 
 typedef unsigned long vm_flags_t;
 
+static inline atomic_t *compound_mapcount_ptr(struct page *page)
+{
+	return &page[1].compound_mapcount;
+}
+
 /*
  * A region containing a mapping of a non-memory backed file under NOMMU
  * conditions.  These are held in a global tree and are pinned by the VMAs that
@@ -302,6 +307,9 @@ struct vm_area_struct {
 	unsigned long vm_flags;		/* Flags, see mm.h. */
 #ifdef CONFIG_MEMPLUS
 	unsigned int memplus_flags;
+#endif
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+	unsigned long rb_glfragment_gap;
 #endif
 
 	/*
@@ -524,6 +532,9 @@ struct mm_struct {
 	/* HMM needs to track a few things per mm */
 	struct hmm *hmm;
 #endif
+	unsigned int zygoteheap_in_MB;
+	int va_feature;
+	unsigned long va_feature_rnd;
 } __randomize_layout;
 
 extern struct mm_struct init_mm;

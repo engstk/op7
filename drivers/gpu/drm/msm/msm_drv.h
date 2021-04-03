@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  * Copyright (C) 2013 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
  *
@@ -103,7 +103,6 @@ enum msm_mdp_plane_property {
 
 	/* range properties */
 	PLANE_PROP_ZPOS = PLANE_PROP_BLOBCOUNT,
-	//xiaoxiaohuan@OnePlus.MultiMediaService,2018/08/04, add for fingerprint
     PLANE_PROP_CUSTOM,
 	PLANE_PROP_ALPHA,
 	PLANE_PROP_COLOR_FILL,
@@ -251,6 +250,18 @@ enum msm_display_caps {
 	MSM_DISPLAY_ESD_ENABLED		= BIT(4),
 	MSM_DISPLAY_CAP_MST_MODE	= BIT(5),
 	MSM_DISPLAY_SPLIT_LINK		= BIT(6),
+};
+
+/**
+ * enum panel_mode - panel operation mode
+ * @MSM_DISPLAY_VIDEO_MODE: video mode panel
+ * @MSM_DISPLAY_CMD_MODE:   Command mode panel
+ * @MODE_MAX:
+ */
+enum panel_op_mode {
+	MSM_DISPLAY_VIDEO_MODE = 0,
+	MSM_DISPLAY_CMD_MODE,
+	MSM_DISPLAY_MODE_MAX,
 };
 
 /**
@@ -450,6 +461,7 @@ struct msm_display_topology {
  * @mdp_transfer_time_us   Specifies the mdp transfer time for command mode
  *                         panels in microseconds.
  * @vpadding:        panel stacking height
+ * @overlap_pixels:	overlap pixels for certain panels
  */
 struct msm_mode_info {
 	uint32_t frame_rate;
@@ -464,6 +476,7 @@ struct msm_mode_info {
 	bool wide_bus_en;
 	u32 mdp_transfer_time_us;
 	u32 vpadding;
+	u32 overlap_pixels;
 };
 
 /**
@@ -491,6 +504,7 @@ struct msm_mode_info {
 struct msm_display_info {
 	int intf_type;
 	uint32_t capabilities;
+	enum panel_op_mode curr_panel_mode;
 
 	uint32_t num_of_h_tiles;
 	uint32_t h_tile_instance[MAX_H_TILES_PER_DISPLAY];
@@ -533,6 +547,14 @@ struct msm_roi_list {
 struct msm_display_kickoff_params {
 	struct msm_roi_list *rois;
 	struct drm_msm_ext_hdr_metadata *hdr_meta;
+};
+
+/**
+ * struct - msm_display_conn_params - info of dpu display features
+ * @qsync_mode: Qsync mode, where 0: disabled 1: continuous mode
+ * @qsync_update: Qsync settings were changed/updated
+ */
+struct msm_display_conn_params {
 	uint32_t qsync_mode;
 	bool qsync_update;
 };
@@ -605,6 +627,7 @@ struct msm_drm_private {
 
 	/* crtcs pending async atomic updates: */
 	uint32_t pending_crtcs;
+	uint32_t pending_planes;
 	wait_queue_head_t pending_crtcs_event;
 
 	unsigned int num_planes;
@@ -980,4 +1003,7 @@ static inline unsigned long timeout_to_jiffies(const ktime_t *timeout)
 	return remaining_jiffies;
 }
 
+int msm_get_mixer_count(struct msm_drm_private *priv,
+		const struct drm_display_mode *mode,
+		u32 max_mixer_width, u32 *num_lm);
 #endif /* __MSM_DRV_H__ */

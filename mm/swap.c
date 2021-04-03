@@ -251,7 +251,6 @@ void rotate_reclaimable_page(struct page *page)
 		struct pagevec *pvec;
 		unsigned long flags;
 
-		/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 		if (PG_UIDLRU(page))
 			return;
 
@@ -281,7 +280,6 @@ static void __activate_page(struct page *page, struct lruvec *lruvec,
 		int file = page_is_file_cache(page);
 		int lru = page_lru_base_type(page);
 
-		/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 		if (PG_UIDLRU(page))
 			return;
 
@@ -654,7 +652,6 @@ void deactivate_file_page(struct page *page)
 	if (PageUnevictable(page))
 		return;
 
-	/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 	if (PG_UIDLRU(page))
 		return;
 

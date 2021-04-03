@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -64,6 +64,7 @@
  * Indicates presence of newly added member to support HW stats.
  */
 #define IPA_QMI_SUPPORTS_STATS
+#define IPA_QMI_SUPPORT_MHI_DEFAULT
 
 #define IPA_INT_MAX	((int)(~0U>>1))
 #define IPA_INT_MIN	(-IPA_INT_MAX - 1)
@@ -484,6 +485,19 @@ struct ipa_indication_reg_req_msg_v01 {
 	 * receive indications for Endpoint descriptor information via
 	 * QMI_IPA_ENDP_DESC_INDICATION. Setting this field in the request
 	 * message makes sense only when the  QMI_IPA_INDICATION_REGISTER_REQ
+	 * is being originated from the master driver.
+	 */
+
+	/* Optional */
+	/* BW CHANGE Indication */
+	uint8_t bw_change_ind_valid;
+	/* Must be set to true if bw_change_ind is being passed */
+	uint8_t bw_change_ind;
+	/*
+	 * If set to TRUE, this field indicates that the client wants to
+	 * receive indications for BW change information via
+	 * QMI_IPA_BW_CHANGE_INDICATION. Setting this field in the request
+	 * message makes sense only when the QMI_IPA_INDICATION_REGISTER_REQ
 	 * is being originated from the master driver.
 	 */
 };  /* Message */
@@ -2480,6 +2494,8 @@ enum ipa_ep_desc_type_enum_v01 {
 	DATA_EP_DESC_TYPE_TETH_PROD_V01 = 0x07,
 	DATA_EP_DESC_TYPE_TETH_RMNET_CONS_V01 = 0x08,
 	DATA_EP_DESC_TYPE_TETH_RMNET_PROD_V01 = 0x09,
+	DATA_EP_DESC_TYPE_EMB_FLOW_CTL_CONS_V01 = 0x0A,
+	DATA_EP_DESC_TYPE_EMB_FLOW_CTL_PROD_V01 = 0x0B,
 	IPA_EP_DESC_TYPE_ENUM_MAX_VAL_V01 = IPA_INT_MAX,
 };
 
@@ -2606,8 +2622,14 @@ struct ipa_add_offload_connection_req_msg_v01 {
 	/* Must be set to true if embedded_call_mux_id is being passed */
 	uint32_t embedded_call_mux_id;
 	/* Mux ID for the new embedded call */
+	/* Optional */
+	/*  Default MHI path */
+	uint8_t default_mhi_path_valid;
+	/* Must be set to true if default_mhi_path is being passed */
+	uint8_t default_mhi_path;
+	/* Default MHI path */
 }; /* Message */
-#define IPA_ADD_OFFLOAD_CONNECTION_REQ_MSG_V01_MAX_MSG_LEN 11357
+#define IPA_ADD_OFFLOAD_CONNECTION_REQ_MSG_V01_MAX_MSG_LEN 11361
 
 struct ipa_add_offload_connection_resp_msg_v01 {
 	/*  Result Code */
@@ -2630,8 +2652,14 @@ struct ipa_remove_offload_connection_req_msg_v01 {
 	uint32_t filter_handle_list_len;
 	struct ipa_filter_rule_identifier_to_handle_map_v01
 		filter_handle_list[QMI_IPA_MAX_FILTERS_V01];
+	/* Optional */
+	/*  Clean All rules */
+	uint8_t clean_all_rules_valid;
+	/* Must be set to true if clean_all_rules is being passed */
+	uint8_t clean_all_rules;
+	/* Clean All rules */
 }; /* Message */
-#define IPA_REMOVE_OFFLOAD_CONNECTION_REQ_MSG_V01_MAX_MSG_LEN 516
+#define IPA_REMOVE_OFFLOAD_CONNECTION_REQ_MSG_V01_MAX_MSG_LEN 520
 
 struct ipa_remove_offload_connection_resp_msg_v01 {
 	/* optional */
@@ -2641,6 +2669,19 @@ struct ipa_remove_offload_connection_resp_msg_v01 {
 	struct ipa_qmi_response_type_v01 resp;
 }; /* Message */
 #define IPA_REMOVE_OFFLOAD_CONNECTION_RESP_MSG_V01_MAX_MSG_LEN 7
+
+struct ipa_bw_change_ind_msg_v01 {
+	/* optional */
+	/* Must be set to true if peak_bw_ul is being passed*/
+	uint8_t peak_bw_ul_valid;
+	/* Kbps */
+	uint32_t peak_bw_ul;
+	/* Must be set to true if peak_bw_dl is being passed*/
+	uint8_t peak_bw_dl_valid;
+	/* Kbps */
+	uint32_t peak_bw_dl;
+}; /* Message */
+#define IPA_BW_CHANGE_IND_MSG_V01_MAX_MSG_LEN 14
 
 /*Service Message Definition*/
 #define QMI_IPA_INDICATION_REGISTER_REQ_V01 0x0020
@@ -2696,12 +2737,12 @@ struct ipa_remove_offload_connection_resp_msg_v01 {
 #define QMI_IPA_ADD_OFFLOAD_CONNECTION_RESP_V01 0x0041
 #define QMI_IPA_REMOVE_OFFLOAD_CONNECTION_REQ_V01 0x0042
 #define QMI_IPA_REMOVE_OFFLOAD_CONNECTION_RESP_V01 0x0042
-
+#define QMI_IPA_BW_CHANGE_INDICATION_V01 0x0044
 
 /* add for max length*/
 #define QMI_IPA_INIT_MODEM_DRIVER_REQ_MAX_MSG_LEN_V01 162
 #define QMI_IPA_INIT_MODEM_DRIVER_RESP_MAX_MSG_LEN_V01 25
-#define QMI_IPA_INDICATION_REGISTER_REQ_MAX_MSG_LEN_V01 16
+#define QMI_IPA_INDICATION_REGISTER_REQ_MAX_MSG_LEN_V01 20
 #define QMI_IPA_INDICATION_REGISTER_RESP_MAX_MSG_LEN_V01 7
 #define QMI_IPA_INSTALL_FILTER_RULE_REQ_MAX_MSG_LEN_V01 33705
 #define QMI_IPA_INSTALL_FILTER_RULE_RESP_MAX_MSG_LEN_V01 783

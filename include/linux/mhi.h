@@ -1,4 +1,4 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,33 +20,39 @@ struct image_info;
 struct bhi_vec_entry;
 struct mhi_timesync;
 struct mhi_buf_info;
+struct mhi_sfr_info;
+
+#define REG_WRITE_QUEUE_LEN 1024
+
+#define REG_WRITE_QUEUE_LEN 1024
 
 /**
  * enum MHI_CB - MHI callback
  * @MHI_CB_IDLE: MHI entered idle state
  * @MHI_CB_PENDING_DATA: New data available for client to process
+ * @MHI_CB_DTR_SIGNAL: DTR signaling update
  * @MHI_CB_LPM_ENTER: MHI host entered low power mode
  * @MHI_CB_LPM_EXIT: MHI host about to exit low power mode
  * @MHI_CB_EE_RDDM: MHI device entered RDDM execution enviornment
  * @MHI_CB_EE_MISSION_MODE: MHI device entered Mission Mode ee
  * @MHI_CB_SYS_ERROR: MHI device enter error state (may recover)
  * @MHI_CB_FATAL_ERROR: MHI device entered fatal error
- * @MHI_CB_BW_REQ: Received a bandwidth switch request from device
  */
 enum MHI_CB {
 	MHI_CB_IDLE,
 	MHI_CB_PENDING_DATA,
+	MHI_CB_DTR_SIGNAL,
 	MHI_CB_LPM_ENTER,
 	MHI_CB_LPM_EXIT,
 	MHI_CB_EE_RDDM,
 	MHI_CB_EE_MISSION_MODE,
 	MHI_CB_SYS_ERROR,
 	MHI_CB_FATAL_ERROR,
-	MHI_CB_BW_REQ,
+	MHI_CB_FW_FALLBACK_IMG,
 };
 
 /**
- * enum MHI_DEBUG_LEVL - various debugging level
+ * enum MHI_DEBUG_LEVEL - various debugging level
  */
 enum MHI_DEBUG_LEVEL {
 	MHI_MSG_LVL_VERBOSE,
@@ -54,6 +60,7 @@ enum MHI_DEBUG_LEVEL {
 	MHI_MSG_LVL_ERROR,
 	MHI_MSG_LVL_CRITICAL,
 	MHI_MSG_LVL_MASK_ALL,
+	MHI_MSG_LVL_MAX,
 };
 
 /**
@@ -124,10 +131,12 @@ enum mhi_dev_state {
  * struct mhi_link_info - bw requirement
  * target_link_speed - as defined by TLS bits in LinkControl reg
  * target_link_width - as defined by NLW bits in LinkStatus reg
+ * sequence_num - used by device to track bw requests sent to host
  */
 struct mhi_link_info {
 	unsigned int target_link_speed;
 	unsigned int target_link_width;
+	int sequence_num;
 };
 
 #define MHI_VOTE_BUS BIT(0) /* do not disable the bus */
@@ -142,6 +151,65 @@ struct image_info {
 	struct mhi_buf *mhi_buf;
 	struct bhi_vec_entry *bhi_vec;
 	u32 entries;
+};
+
+/* rddm header info */
+
+#define MAX_RDDM_TABLE_SIZE 6
+
+/**
+ * struct rddm_table_info - rddm table info
+ * @base_address - Start offset of the file
+ * @actual_phys_address - phys addr offset of file
+ * @size - size of file
+ * @description - file description
+ * @file_name - name of file
+ */
+struct rddm_table_info {
+	u64 base_address;
+	u64 actual_phys_address;
+	u64 size;
+	char description[20];
+	char file_name[20];
+};
+
+/**
+ * struct rddm_header - rddm header
+ * @version - header ver
+ * @header_size - size of header
+ * @rddm_table_info - array of rddm table info
+ */
+struct rddm_header {
+	u32 version;
+	u32 header_size;
+	struct rddm_table_info table_info[MAX_RDDM_TABLE_SIZE];
+};
+
+/**
+ * struct file_info - keeping track of file info while traversing the rddm
+ * table header
+ * @file_offset - current file offset
+ * @seg_idx - mhi buf seg array index
+ * @rem_seg_len - remaining length of the segment containing current file
+ */
+struct file_info {
+	u8 *file_offset;
+	u32 file_size;
+	u32 seg_idx;
+	u32 rem_seg_len;
+};
+
+/**
+ * struct reg_write_info - offload reg write info
+ * @reg_addr - register address
+ * @val - value to be written to register
+ * @chan - channel number
+ * @valid - entry is valid or not
+ */
+struct reg_write_info {
+	void __iomem *reg_addr;
+	u32 val;
+	bool valid;
 };
 
 /**
@@ -206,6 +274,8 @@ struct mhi_controller {
 	void __iomem *bhi;
 	void __iomem *bhie;
 	void __iomem *wake_db;
+	void __iomem *tsync_db;
+	void __iomem *bw_scale_db;
 
 	/* device topology */
 	u32 dev_id;
@@ -223,6 +293,7 @@ struct mhi_controller {
 
 	/* fw images */
 	const char *fw_image;
+	const char *fw_image_fallback;
 	const char *edl_image;
 
 	/* mhi host manages downloading entire fbc images */
@@ -248,6 +319,7 @@ struct mhi_controller {
 	u32 msi_allocated;
 	int *irq; /* interrupt table */
 	struct mhi_event *mhi_event;
+	struct list_head sp_ev_rings; /* special purpose event rings */
 
 	/* cmd rings */
 	struct mhi_cmd *mhi_cmd;
@@ -256,9 +328,11 @@ struct mhi_controller {
 	struct mhi_ctxt *mhi_ctxt;
 
 	u32 timeout_ms;
+	u32 m2_timeout_ms; /* wait time for host to continue suspend after m2 */
 
 	/* caller should grab pm_mutex for suspend/resume operations */
 	struct mutex pm_mutex;
+	struct mutex tsync_mutex;
 	bool pre_init;
 	rwlock_t pm_lock;
 	u32 pm_state;
@@ -284,8 +358,9 @@ struct mhi_controller {
 
 	/* worker for different state transitions */
 	struct work_struct st_worker;
-	struct work_struct fw_worker;
-	struct work_struct syserr_worker;
+	struct work_struct special_work;
+	struct workqueue_struct *wq;
+
 	wait_queue_head_t state_event;
 
 	/* shadow functions */
@@ -304,6 +379,10 @@ struct mhi_controller {
 	void (*unmap_single)(struct mhi_controller *mhi_cntrl,
 			     struct mhi_buf_info *buf);
 	void (*tsync_log)(struct mhi_controller *mhi_cntrl, u64 remote_time);
+	int (*bw_scale)(struct mhi_controller *mhi_cntrl,
+			struct mhi_link_info *link_info);
+	void (*write_reg)(struct mhi_controller *mhi_cntrl, void __iomem *base,
+			u32 offset, u32 val);
 
 	/* channel to control DTR messaging */
 	struct mhi_device *dtr_dev;
@@ -314,9 +393,12 @@ struct mhi_controller {
 
 	/* supports time sync feature */
 	struct mhi_timesync *mhi_tsync;
-	struct mhi_device *tsync_dev;
 	u64 local_timer_freq;
 	u64 remote_timer_freq;
+
+	/* subsytem failure reason retrieval feature */
+	struct mhi_sfr_info *mhi_sfr;
+	size_t sfr_len;
 
 	/* kernel log level */
 	enum MHI_DEBUG_LEVEL klog_lvl;
@@ -325,10 +407,21 @@ struct mhi_controller {
 	enum MHI_DEBUG_LEVEL log_lvl;
 
 	/* controller specific data */
+	const char *name;
+	bool power_down;
+	bool initiate_mhi_reset;
 	void *priv_data;
 	void *log_buf;
+	void *cntrl_log_buf;
 	struct dentry *dentry;
 	struct dentry *parent;
+
+	/* for reg write offload */
+	struct workqueue_struct *offload_wq;
+	struct work_struct reg_write_work;
+	struct reg_write_info *reg_write_q;
+	atomic_t write_idx;
+	u32 read_idx;
 };
 
 /**
@@ -519,6 +612,30 @@ void mhi_device_get(struct mhi_device *mhi_dev, int vote);
  */
 int mhi_device_get_sync(struct mhi_device *mhi_dev, int vote);
 /**
+ * mhi_device_get_sync_atomic - Asserts device_wait and moves device to M0
+ * @mhi_dev: Device associated with the channels
+ * @timeout_us: timeout, in micro-seconds
+ *
+ * The device_wake is asserted to keep device in M0 or bring it to M0.
+ * If device is not in M0 state, then this function will wait for device to
+ * move to M0, until @timeout_us elapses.
+ * However, if device's M1 state-change event races with this function
+ * then there is a possiblity of device moving from M0 to M2 and back
+ * to M0. That can't be avoided as host must transition device from M1 to M2
+ * as per the spec.
+ * Clients can ignore that transition after this function returns as the device
+ * is expected to immediately  move from M2 to M0 as wake is asserted and
+ * wouldn't enter low power state.
+ *
+ * Returns:
+ * 0 if operation was successful (however, M0 -> M2 -> M0 is possible later) as
+ * mentioned above.
+ * -ETIMEDOUT is device faled to move to M0 before @timeout_us elapsed
+ * -EIO if the MHI state is one of the ERROR states.
+ */
+int mhi_device_get_sync_atomic(struct mhi_device *mhi_dev, int timeout_us);
+
+/**
  * mhi_device_put - re-enable low power modes
  * @mhi_dev: Device associated with the channels
  * @vote: vote to remove
@@ -538,6 +655,22 @@ int mhi_prepare_for_transfer(struct mhi_device *mhi_dev);
  * @mhi_dev: Device associated with the channels
  */
 void mhi_unprepare_from_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_pause_transfer - Pause the current transfe
+ * Moves both UL and DL channels to STOP state to halt
+ * pending transfers.
+ * @mhi_dev: Device associated with the channels
+ */
+int mhi_pause_transfer(struct mhi_device *mhi_dev);
+
+/**
+ * mhi_resume_transfer - resume current transfer
+ * Moves both UL and DL channels to START state to
+ * resume transfer.
+ * @mhi_dev: Device associated with the channels
+ */
+int mhi_resume_transfer(struct mhi_device *mhi_dev);
 
 /**
  * mhi_get_no_free_descriptors - Get transfer ring length
@@ -670,6 +803,29 @@ int mhi_download_rddm_img(struct mhi_controller *mhi_cntrl, bool in_panic);
 int mhi_force_rddm_mode(struct mhi_controller *mhi_cntrl);
 
 /**
+ * mhi_dump_sfr - Print SFR string from RDDM table.
+ * @mhi_cntrl: MHI controller
+ */
+void mhi_dump_sfr(struct mhi_controller *mhi_cntrl);
+
+/**
+ * mhi_get_remote_time - Get external modem time relative to host time
+ * Trigger event to capture modem time, also capture host time so client
+ * can do a relative drift comparision.
+ * Recommended only tsync device calls this method and do not call this
+ * from atomic context
+ * @mhi_dev: Device associated with the channels
+ * @sequence:unique sequence id track event
+ * @cb_func: callback function to call back
+ */
+int mhi_get_remote_time(struct mhi_device *mhi_dev,
+			u32 sequence,
+			void (*cb_func)(struct mhi_device *mhi_dev,
+					u32 sequence,
+					u64 local_time,
+					u64 remote_time));
+
+/**
  * mhi_get_remote_time_sync - Get external soc time relative to local soc time
  * using MMIO method.
  * @mhi_dev: Device associated with the channels
@@ -721,12 +877,18 @@ void mhi_control_error(struct mhi_controller *mhi_cntrl);
  */
 void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl);
 
+/**
+ * mhi_get_restart_reason - retrieve the subsystem failure reason
+ * @name: controller name
+ */
+char *mhi_get_restart_reason(const char *name);
+
 #ifndef CONFIG_ARCH_QCOM
 
 #ifdef CONFIG_MHI_DEBUG
 
 #define MHI_VERB(fmt, ...) do { \
-		if (mhi_cntrl->klog_lvl <= MHI_MSG_VERBOSE) \
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_VERBOSE) \
 			pr_dbg("[D][%s] " fmt, __func__, ##__VA_ARGS__);\
 } while (0)
 
@@ -736,8 +898,18 @@ void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl);
 
 #endif
 
+#define MHI_CNTRL_LOG(fmt, ...) do {	\
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_INFO) \
+			pr_info("[I][%s] " fmt, __func__, ##__VA_ARGS__);\
+} while (0)
+
+#define MHI_CNTRL_ERR(fmt, ...) do {	\
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_ERROR) \
+			pr_err("[E][%s] " fmt, __func__, ##__VA_ARGS__); \
+} while (0)
+
 #define MHI_LOG(fmt, ...) do {	\
-		if (mhi_cntrl->klog_lvl <= MHI_MSG_INFO) \
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_INFO) \
 			pr_info("[I][%s] " fmt, __func__, ##__VA_ARGS__);\
 } while (0)
 
@@ -768,9 +940,28 @@ void mhi_debug_reg_dump(struct mhi_controller *mhi_cntrl);
 
 #else
 
-#define MHI_VERB(fmt, ...)
+#define MHI_VERB(fmt, ...) do { \
+		if (mhi_cntrl->log_buf && \
+		    (mhi_cntrl->log_lvl <= MHI_MSG_LVL_VERBOSE)) \
+			ipc_log_string(mhi_cntrl->log_buf, "[D][%s] " fmt, \
+				       __func__, ##__VA_ARGS__); \
+} while (0)
 
 #endif
+
+#define MHI_CNTRL_LOG(fmt, ...) do { \
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_INFO) \
+			pr_err("[I][%s] " fmt, __func__, ##__VA_ARGS__);\
+		ipc_log_string(mhi_cntrl->cntrl_log_buf, "[I][%s] " fmt, \
+			       __func__, ##__VA_ARGS__); \
+} while (0)
+
+#define MHI_CNTRL_ERR(fmt, ...) do { \
+		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_ERROR) \
+			pr_err("[E][%s] " fmt, __func__, ##__VA_ARGS__); \
+		ipc_log_string(mhi_cntrl->cntrl_log_buf, "[E][%s] " fmt, \
+			       __func__, ##__VA_ARGS__); \
+} while (0)
 
 #define MHI_LOG(fmt, ...) do {	\
 		if (mhi_cntrl->klog_lvl <= MHI_MSG_LVL_INFO) \

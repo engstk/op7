@@ -108,10 +108,6 @@ eval_exit:
 	mutex_unlock(&bcl_perph->state_trans_lock);
 }
 
-/*
- * When low soc, bcl set 2 perf cores to isolation,
- * insert usb recover the perf cores.
- */
 static void bcl_usb_process(struct work_struct *work)
 {
 	static struct power_supply *usb_psy;

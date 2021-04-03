@@ -33,6 +33,8 @@
 #include <linux/cpufreq.h>
 #include <linux/slab.h>
 #include <dt-bindings/clock/qcom,cpucc-sm8150.h>
+#include <oneplus/pccore/pccore_helper.h>
+#include <trace/events/power.h>
 
 #include "common.h"
 #include "clk-regmap.h"
@@ -89,6 +91,7 @@ static bool is_sdmshrike;
 static bool is_sm6150;
 static bool is_sdmmagpie;
 static bool is_trinket;
+static bool is_atoll;
 
 static inline struct clk_osm *to_clk_osm(struct clk_hw *_hw)
 {
@@ -606,11 +609,44 @@ static unsigned int
 osm_cpufreq_fast_switch(struct cpufreq_policy *policy, unsigned int target_freq)
 {
 	int index;
+	int dp_level = get_op_level();
+	bool op_enable = get_op_select_freq_enable();
+	int dp_level_mode = get_op_fd_mode();
+	int idx_cache;
 
 	index = cpufreq_frequency_table_target(policy, target_freq,
-							CPUFREQ_RELATION_L);
+			get_op_select_freq_enable() ? CPUFREQ_RELATION_OP : CPUFREQ_RELATION_L);
 	if (index < 0)
 		return 0;
+	idx_cache = index;
+
+	if (op_enable) {
+		if (dp_level_mode == 2) {
+			if (policy->freq_table_sorted == CPUFREQ_TABLE_SORTED_ASCENDING)
+				index = find_prefer_pd(policy->cpu, index, true, dp_level);
+			else
+				index = find_prefer_pd(policy->cpu, index, false, dp_level);
+		} else if (dp_level_mode == 1) {
+
+			if (policy->freq_table_sorted == CPUFREQ_TABLE_SORTED_ASCENDING) {
+
+				if (index - dp_level >= 0)
+					index -= dp_level;
+				else
+					index = 0;
+			} else {
+				int max = cpufreq_table_count_valid_entries(policy);
+
+				if (index + dp_level > max)
+					index = max;
+				else
+					index += dp_level;
+			}
+		}
+	}
+
+	trace_find_freq(idx_cache, target_freq, index, policy->freq_table[index].frequency,
+		policy->cpu, op_enable, dp_level_mode, dp_level);
 
 	osm_cpufreq_target_index(policy, index);
 
@@ -1031,7 +1067,8 @@ static int clk_osm_resources_init(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	if (is_sdmshrike || is_sm6150 || is_sdmmagpie || is_trinket)
+	if (is_sdmshrike || is_sm6150 || is_sdmmagpie ||
+		is_trinket || is_atoll)
 		return 0;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
@@ -1124,9 +1161,13 @@ static int clk_cpu_osm_driver_probe(struct platform_device *pdev)
 
 	is_sdmshrike = of_device_is_compatible(pdev->dev.of_node,
 				"qcom,clk-cpu-osm-sdmshrike");
+
+	is_atoll = of_device_is_compatible(pdev->dev.of_node,
+				"qcom,clk-cpu-osm-atoll");
+
 	if (is_sdmshrike)
 		clk_cpu_osm_driver_sdmshrike_fixup();
-	else if (is_sm6150 || is_sdmmagpie)
+	else if (is_sm6150 || is_sdmmagpie || is_atoll)
 		clk_cpu_osm_driver_sm6150_fixup();
 	else if (is_trinket)
 		clk_cpu_osm_driver_trinket_fixup();
@@ -1183,7 +1224,8 @@ static int clk_cpu_osm_driver_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	if (!is_sdmshrike && !is_sm6150 && !is_sdmmagpie && !is_trinket) {
+	if (!is_sdmshrike && !is_sm6150 && !is_sdmmagpie &&
+		!is_trinket && !is_atoll) {
 		rc = clk_osm_read_lut(pdev, &perfpcl_clk);
 		if (rc) {
 			dev_err(&pdev->dev, "Unable to read OSM LUT for perf plus cluster, rc=%d\n",
@@ -1265,6 +1307,7 @@ static const struct of_device_id match_table[] = {
 	{ .compatible = "qcom,clk-cpu-osm-sdmmagpie" },
 	{ .compatible = "qcom,clk-cpu-osm-trinket" },
 	{ .compatible = "qcom,clk-cpu-osm-sdmshrike" },
+	{ .compatible = "qcom,clk-cpu-osm-atoll" },
 	{}
 };
 

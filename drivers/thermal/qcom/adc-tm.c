@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -23,9 +23,7 @@
 #include <linux/iio/iio.h>
 #include "adc-tm.h"
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_HOUSTON
 #include <oneplus/houston/houston_helper.h>
-
 LIST_HEAD(adc_tm_device_list);
 
 static int adc_tm_get_temp(void *data, int *temp)
@@ -96,7 +94,6 @@ static int adc_tm_register_tzd(struct adc_tm_chip *adc_tm, int dt_chan_num,
 				continue;
 			}
 			adc_tm->sensor[i].tzd = tzd;
-// tedlin@ASTI 2019/06/12 add for register (CONFIG_HOUSTON)
 			ht_register_thermal_zone_device(adc_tm->sensor[i].tzd);
 		} else
 			adc_tm->sensor[i].tzd = NULL;
@@ -175,6 +172,10 @@ static const struct of_device_id adc_tm_match_table[] = {
 	{
 		.compatible = "qcom,adc-tm5",
 		.data = &data_adc_tm5,
+	},
+	{
+		.compatible = "qcom,adc-tm-rev2",
+		.data = &data_adc_tm_rev2,
 	},
 	{
 		.compatible = "qcom,adc-tm5-iio",

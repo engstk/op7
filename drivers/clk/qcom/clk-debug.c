@@ -307,7 +307,6 @@ exit:
 DEFINE_SIMPLE_ATTRIBUTE(clk_measure_fops, clk_debug_measure_get,
 							NULL, "%lld\n");
 
-// tedlin@ASTI, 2019/06/12 add for ddrfreq query
 void clk_get_ddr_freq(u64* val)
 {
 	struct clk_debug_mux *meas = to_clk_measure(measure);

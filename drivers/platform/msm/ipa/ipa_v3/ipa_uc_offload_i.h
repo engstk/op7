@@ -1,4 +1,4 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -20,8 +20,8 @@
  * Neutrino protocol related data structures
  */
 
-#define IPA_UC_MAX_NTN_TX_CHANNELS 1
-#define IPA_UC_MAX_NTN_RX_CHANNELS 1
+#define IPA_UC_MAX_NTN_TX_CHANNELS 2
+#define IPA_UC_MAX_NTN_RX_CHANNELS 2
 
 #define IPA_NTN_TX_DIR 1
 #define IPA_NTN_RX_DIR 2
@@ -283,6 +283,8 @@ struct ipa3_uc_ntn_ctx {
 	struct Ipa3HwStatsNTNInfoData_t *ntn_uc_stats_mmio;
 	void *priv;
 	ipa_uc_ready_cb uc_ready_cb;
+	phys_addr_t ntn_reg_base_ptr_pa_rd;
+	u32 smmu_mapped;
 };
 
 /**
@@ -361,7 +363,9 @@ struct Ipa3HwNtnSetUpCmdData_t {
 	u8  ipa_pipe_number;
 	u8  dir;
 	u16 data_buff_size;
-
+	u8 db_mode;
+	u8 reserved1;
+	u16 reserved2;
 } __packed;
 
 /**
@@ -469,33 +473,6 @@ enum ipa_cpu_2_hw_offload_commands {
 	IPA_CPU_2_HW_CMD_OFFLOAD_STATS_DEALLOC =
 		FEATURE_ENUM_VAL(IPA_HW_FEATURE_OFFLOAD, 6),
 };
-
-/**
- * struct IpaOffloadStatschannel_info - channel info for uC
- * stats
- * @dir: Director of the channel ID DIR_CONSUMER =0,
- * DIR_PRODUCER = 1
- * @ch_id: Channel id of the IPA endpoint for which stats need
- * to be calculated, 0xFF means invalid channel or disable stats
- * on already stats enabled channel
- */
-struct IpaOffloadStatschannel_info {
-	uint8_t dir;
-	uint8_t ch_id;
-} __packed;
-
-/**
- * struct IpaHwOffloadStatsAllocCmdData_t - protocol info for uC
- * stats start
- * @protocol: Enum that indicates the protocol type
- * @ch_id_info: Channel id of the IPA endpoint for which stats
- * need to be calculated
- */
-struct IpaHwOffloadStatsAllocCmdData_t {
-	uint32_t protocol;
-	struct IpaOffloadStatschannel_info
-		ch_id_info[MAX_CH_STATS_SUPPORTED];
-} __packed;
 
 /**
  * struct IpaHwOffloadStatsDeAllocCmdData_t - protocol info for

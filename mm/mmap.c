@@ -51,12 +51,17 @@
 #include <asm/cacheflush.h>
 #include <asm/tlb.h>
 #include <asm/mmu_context.h>
+#include <linux/random.h>
 
 #include "internal.h"
+
+#define GPU_HIGH_LIMIT_3776M  3959422976
 
 #ifndef arch_mmap_check
 #define arch_mmap_check(addr, len, flags)	(0)
 #endif
+
+#define SIZE_10M 0xA00000
 
 #ifdef CONFIG_HAVE_ARCH_MMAP_RND_BITS
 const int mmap_rnd_bits_min = CONFIG_ARCH_MMAP_RND_BITS_MIN;
@@ -89,12 +94,6 @@ static void unmap_region(struct mm_struct *mm,
  * MAP_PRIVATE	r: (no) no	r: (yes) yes	r: (no) yes	r: (no) yes
  *		w: (no) no	w: (no) no	w: (copy) copy	w: (no) no
  *		x: (no) no	x: (no) yes	x: (no) yes	x: (yes) yes
- *
- * On arm64, PROT_EXEC has the following behaviour for both MAP_SHARED and
- * MAP_PRIVATE:
- *								r: (no) no
- *								w: (no) no
- *								x: (yes) yes
  */
 pgprot_t protection_map[16] __ro_after_init = {
 	__P000, __P001, __P010, __P011, __P100, __P101, __P110, __P111,
@@ -276,6 +275,18 @@ out:
 static long vma_compute_subtree_gap(struct vm_area_struct *vma)
 {
 	unsigned long max, prev_end, subtree_gap;
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+	unsigned long gl_tmp, gl_gap;
+	unsigned long gpu_vm_end;
+	unsigned long mmap_limit;
+	bool va32bit = false;
+
+	if (test_thread_flag(TIF_32BIT)) {
+		va32bit = true;
+		gpu_vm_end = GPU_HIGH_LIMIT_3776M;
+		mmap_limit = min_t(unsigned long, gpu_vm_end, vma->vm_mm->mmap_base);
+	}
+#endif
 
 	/*
 	 * Note: in the rare case of a VM_GROWSDOWN above a VM_GROWSUP, we
@@ -284,8 +295,23 @@ static long vma_compute_subtree_gap(struct vm_area_struct *vma)
 	 * That's a little inconsistent, but keeps the code here simpler.
 	 */
 	max = vm_start_gap(vma);
+
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+	if (va32bit)
+		gl_gap = min_t(unsigned long, max, mmap_limit);
+#endif
+
 	if (vma->vm_prev) {
 		prev_end = vm_end_gap(vma->vm_prev);
+
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+		if (va32bit) {
+			if (prev_end < mmap_limit && max > prev_end)
+				gl_gap -= prev_end;
+			else
+				gl_gap = 0;
+		}
+#endif
 		if (max > prev_end)
 			max -= prev_end;
 		else
@@ -296,13 +322,35 @@ static long vma_compute_subtree_gap(struct vm_area_struct *vma)
 				struct vm_area_struct, vm_rb)->rb_subtree_gap;
 		if (subtree_gap > max)
 			max = subtree_gap;
+
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+		if (va32bit) {
+			gl_tmp = rb_entry(vma->vm_rb.rb_left, struct vm_area_struct, vm_rb)->rb_glfragment_gap;
+			if (gl_tmp > gl_gap)
+				gl_gap = gl_tmp;
+		}
+#endif
 	}
 	if (vma->vm_rb.rb_right) {
 		subtree_gap = rb_entry(vma->vm_rb.rb_right,
 				struct vm_area_struct, vm_rb)->rb_subtree_gap;
 		if (subtree_gap > max)
 			max = subtree_gap;
+
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+		if (va32bit) {
+			gl_tmp = rb_entry(vma->vm_rb.rb_right, struct vm_area_struct, vm_rb)->rb_glfragment_gap;
+			if (gl_tmp > gl_gap)
+				gl_gap = gl_tmp;
+		}
+#endif
 	}
+
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+	if (va32bit)
+		vma->rb_glfragment_gap = gl_gap;
+#endif
+
 	return max;
 }
 
@@ -420,8 +468,51 @@ static void validate_mm(struct mm_struct *mm)
 #define mm_rb_write_unlock(mm)	do { } while (0)
 #endif /* CONFIG_SPECULATIVE_PAGE_FAULT */
 
+#ifdef CONFIG_VM_FRAGMENT_MONITOR
+static inline void vma_gap_callbacks_propagate(struct rb_node *rb, struct rb_node *stop)
+{
+	unsigned long gl_tmp;
+	unsigned long augmented;
+
+	while (rb != stop) {
+		struct vm_area_struct *node = rb_entry(rb, struct vm_area_struct, vm_rb);
+
+		gl_tmp = node->rb_glfragment_gap;
+		augmented = vma_compute_subtree_gap(node);
+
+		if (node->rb_subtree_gap == augmented && node->rb_glfragment_gap == gl_tmp)
+			break;
+
+		node->rb_subtree_gap = augmented;
+		rb = rb_parent(&node->vm_rb);
+	}
+}
+static inline void
+vma_gap_callbacks_copy(struct rb_node *rb_old, struct rb_node *rb_new)
+{
+	struct vm_area_struct *old = rb_entry(rb_old, struct vm_area_struct, vm_rb);
+	struct vm_area_struct *new = rb_entry(rb_new, struct vm_area_struct, vm_rb);
+
+	new->rb_subtree_gap = old->rb_subtree_gap;
+}
+static void
+vma_gap_callbacks_rotate(struct rb_node *rb_old, struct rb_node *rb_new)
+{
+	struct vm_area_struct *old = rb_entry(rb_old, struct vm_area_struct, vm_rb);
+	struct vm_area_struct *new = rb_entry(rb_new, struct vm_area_struct, vm_rb);
+
+	new->rb_subtree_gap = old->rb_subtree_gap;
+	old->rb_subtree_gap = vma_compute_subtree_gap(old);
+}
+static const struct rb_augment_callbacks vma_gap_callbacks = {
+	.propagate = vma_gap_callbacks_propagate,
+	.copy = vma_gap_callbacks_copy,
+	.rotate = vma_gap_callbacks_rotate
+};
+#else
 RB_DECLARE_CALLBACKS(static, vma_gap_callbacks, struct vm_area_struct, vm_rb,
 		     unsigned long, rb_subtree_gap, vma_compute_subtree_gap)
+#endif
 
 /*
  * Update augmented rbtree rb_subtree_gap values after vma->vm_start or
@@ -1510,8 +1601,12 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 
 		switch (flags & MAP_TYPE) {
 		case MAP_SHARED:
-			if ((prot&PROT_WRITE) && !(file->f_mode&FMODE_WRITE))
-				return -EACCES;
+			if (prot & PROT_WRITE) {
+				if (!(file->f_mode & FMODE_WRITE))
+					return -EACCES;
+				if (IS_SWAPFILE(file->f_mapping->host))
+					return -ETXTBSY;
+			}
 
 			/*
 			 * Make sure we don't allow writing to an append-only
@@ -2002,6 +2097,23 @@ unsigned long unmapped_area_topdown(struct vm_unmapped_area_info *info)
 	if (length < info->length)
 		return -ENOMEM;
 
+	if ((mm->va_feature & 0x2) && info->high_limit == mm->mmap_base) {
+		struct vm_unmapped_area_info info_b;
+		unsigned long addr;
+
+		switch (info->length) {
+		case 4096: case 8192: case 16384: case 32768:
+		case 65536: case 131072: case 262144:
+			info_b = *info;
+			info_b.high_limit = current->mm->va_feature_rnd - (SIZE_10M * (ilog2(info->length) - 12));
+			info_b.low_limit = current->mm->va_feature_rnd - (SIZE_10M * 7);
+			addr = unmapped_area_topdown(&info_b);
+			if (!offset_in_page(addr))
+				return addr;
+		default:
+			break;
+		}
+	}
 	/*
 	 * Adjust search limits by the desired length.
 	 * See implementation comment at top of unmapped_area().
@@ -2169,6 +2281,9 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = max(PAGE_SIZE, mmap_min_addr);
+	if (mm->va_feature & 0x1)
+		info.low_limit = max_t(unsigned long, 0x12c00000, info.low_limit);
+
 	info.high_limit = mm->mmap_base;
 	info.align_mask = 0;
 	addr = vm_unmapped_area(&info);
@@ -2184,6 +2299,14 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 		info.flags = 0;
 		info.low_limit = TASK_UNMAPPED_BASE;
 		info.high_limit = TASK_SIZE;
+		addr = vm_unmapped_area(&info);
+	}
+
+	if ((mm->va_feature & 0x1) && offset_in_page(addr)) {
+		VM_BUG_ON(addr != -ENOMEM);
+		info.flags = VM_UNMAPPED_AREA_TOPDOWN;
+		info.low_limit = max(PAGE_SIZE, mmap_min_addr);
+		info.high_limit = mm->mmap_base;
 		addr = vm_unmapped_area(&info);
 	}
 
@@ -2886,6 +3009,7 @@ EXPORT_SYMBOL(vm_munmap);
 
 SYSCALL_DEFINE2(munmap, unsigned long, addr, size_t, len)
 {
+	addr = untagged_addr(addr);
 	profile_munmap(addr);
 	return vm_munmap(addr, len);
 }

@@ -1203,7 +1203,7 @@ static int sla_netlink_rcv_msg(struct sk_buff *skb, struct nlmsghdr *nlh,
 	case SLA_DISABLE_GAME_RTT:
 		ret = op_sla_set_game_rtt_detecting(nlh);
 		break;
-	case SLA_NOTIFY_SWITCH_STATE:
+	case SLA_NOTIFY_GAME_SWITCH_STATE:
 		ret = op_sla_set_switch_state(nlh);
 		break;
 	case SLA_NOTIFY_SCREEN_STATE:

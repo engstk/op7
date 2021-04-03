@@ -13,7 +13,6 @@
 #include <linux/atomic.h>
 #include <linux/page-flags.h>
 #include <asm/page.h>
-/* bin.zhong@ASTI add for CONFIG_SMART_BOOST */
 #include <oneplus/smartboost/smartboost_helper.h>
 
 struct notifier_block;
@@ -379,14 +378,8 @@ extern int vm_breath_priority;
 extern int node_reclaim_mode;
 extern int sysctl_min_unmapped_ratio;
 extern int sysctl_min_slab_ratio;
-extern int node_reclaim(struct pglist_data *, gfp_t, unsigned int);
 #else
 #define node_reclaim_mode 0
-static inline int node_reclaim(struct pglist_data *pgdat, gfp_t mask,
-				unsigned int order)
-{
-	return 0;
-}
 #endif
 
 extern int page_evictable(struct page *page);
@@ -452,24 +445,15 @@ extern bool has_usable_swap(void);
 /* Swap 50% full? Release swapcache more aggressively.. */
 static inline bool vm_swap_full(void)
 {
-	/*
-	 * CONFIG_MEMPLUS add start by bin.zhong@ASTI
-	 * don't bother replace any swapcache only entries
-	 */
 	if (__memplus_enabled())
 		return false;
-	/* add end */
-
 	return atomic_long_read(&nr_swap_pages) * 2 < total_swap_pages;
 }
 
 static inline long get_nr_swap_pages(void)
 {
-    /* CONFIG_MEMPLUS add start by bin.zhong@ASTI */
 	if (__memplus_enabled())
 		return 0;
-	/* add end */
-
 	return atomic_long_read(&nr_swap_pages);
 }
 

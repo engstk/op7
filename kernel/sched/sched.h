@@ -47,15 +47,24 @@
 # define SCHED_WARN_ON(x)	({ (void)(x), 0; })
 #endif
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+#include <linux/oem/oneplus_healthinfo.h>
+#endif
+
 struct rq;
 struct cpuidle_state;
-
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-extern unsigned  int  main_preempt_disable;
 
 extern __read_mostly bool sched_predl;
 extern unsigned int sched_capacity_margin_up[NR_CPUS];
 extern unsigned int sched_capacity_margin_down[NR_CPUS];
+
+#ifdef CONFIG_IM
+extern int group_show(struct seq_file *m, void *v);
+extern void group_remove(void);
+#else
+static inline int group_show(struct seq_file *m, void *v) {return 0};
+static inline void group_remove(void) {};
+#endif
 
 #ifdef CONFIG_SCHED_WALT
 extern unsigned int sched_ravg_window;
@@ -114,6 +123,9 @@ struct sched_cluster {
 	bool wake_up_idle;
 	u64 aggr_grp_load;
 	u64 coloc_boost_load;
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	struct sched_stat_para *overload;
+#endif
 };
 
 extern unsigned int sched_disable_window_stats;
@@ -162,7 +174,13 @@ static inline void cpu_load_update_active(struct rq *this_rq) { }
 #ifdef CONFIG_64BIT
 # define NICE_0_LOAD_SHIFT	(SCHED_FIXEDPOINT_SHIFT + SCHED_FIXEDPOINT_SHIFT)
 # define scale_load(w)		((w) << SCHED_FIXEDPOINT_SHIFT)
-# define scale_load_down(w)	((w) >> SCHED_FIXEDPOINT_SHIFT)
+# define scale_load_down(w) \
+({ \
+	unsigned long __w = (w); \
+	if (__w) \
+		__w = max(2UL, __w >> SCHED_FIXEDPOINT_SHIFT); \
+	__w; \
+})
 #else
 # define NICE_0_LOAD_SHIFT	(SCHED_FIXEDPOINT_SHIFT)
 # define scale_load(w)		(w)
@@ -354,8 +372,6 @@ struct cfs_bandwidth {
 	ktime_t period;
 	u64 quota, runtime;
 	s64 hierarchical_quota;
-	u64 runtime_expires;
-	int expires_seq;
 
 	short idle, period_active;
 	struct hrtimer period_timer, slack_timer;
@@ -567,8 +583,6 @@ struct cfs_rq {
 
 #ifdef CONFIG_CFS_BANDWIDTH
 	int runtime_enabled;
-	int expires_seq;
-	u64 runtime_expires;
 	s64 runtime_remaining;
 
 	u64 throttled_clock, throttled_clock_task;
@@ -951,6 +965,13 @@ struct rq {
 
 #ifdef CONFIG_SMP
 	struct llist_head wake_list;
+#endif
+
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	unsigned int ux_nr_running;
+	u64 cfs_ol_start;
+	u64 ux_ol_start;
+	u64 irqsoff_start_time;
 #endif
 
 #ifdef CONFIG_CPU_IDLE
@@ -1877,6 +1898,11 @@ static inline void add_nr_running(struct rq *rq, unsigned count)
 	sched_update_nr_prod(cpu_of(rq), count, true);
 	rq->nr_running = prev_nr + count;
 
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	if (prev_nr <= 5 && rq->nr_running > 5)
+		rq->cfs_ol_start = rq_clock(rq);
+#endif
+
 	if (prev_nr < 2 && rq->nr_running >= 2) {
 #ifdef CONFIG_SMP
 		if (!READ_ONCE(rq->rd->overload))
@@ -1889,8 +1915,19 @@ static inline void add_nr_running(struct rq *rq, unsigned count)
 
 static inline void sub_nr_running(struct rq *rq, unsigned count)
 {
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	u64 delta;
+	unsigned int prev_nr = rq->nr_running;
+#endif
 	sched_update_nr_prod(cpu_of(rq), count, false);
 	rq->nr_running -= count;
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	if (prev_nr > 5 && rq->nr_running <= 5) {
+		delta = rq_clock(rq) - rq->cfs_ol_start;
+		rq->cfs_ol_start = 0;
+		ohm_overload_record(rq, (delta >> 20));
+	}
+#endif
 	/* Check if we still need preemption */
 	sched_update_tick_dependency(rq);
 }
@@ -1948,7 +1985,7 @@ u64 sched_ktime_clock(void);
 #else
 static inline u64 sched_ktime_clock(void)
 {
-	return 0;
+	return sched_clock();
 }
 #endif
 
@@ -2126,7 +2163,6 @@ cpu_util_freq_walt(int cpu, struct sched_walt_cpu_load *walt_load)
 
 		nl = div64_u64(nl * (100 + boost),
 		walt_cpu_util_freq_divisor);
-		pl = div64_u64(pl * (100 + boost), 100);
 
 		walt_load->prev_window_util = util;
 		walt_load->nl = nl;
@@ -2508,16 +2544,20 @@ DECLARE_PER_CPU(struct update_util_data *, cpufreq_update_util_data);
 static inline void cpufreq_update_util(struct rq *rq, unsigned int flags)
 {
 	struct update_util_data *data;
+	u64 clock;
 
 #ifdef CONFIG_SCHED_WALT
 	if (!(flags & SCHED_CPUFREQ_WALT))
 		return;
+	clock = sched_ktime_clock();
+#else
+	clock = rq_clock(rq);
 #endif
 
 	data = rcu_dereference_sched(*per_cpu_ptr(&cpufreq_update_util_data,
 					cpu_of(rq)));
 	if (data)
-		data->func(data, sched_ktime_clock(), flags);
+		data->func(data, clock, flags);
 }
 #else
 static inline void cpufreq_update_util(struct rq *rq, unsigned int flags) {}
@@ -2871,15 +2911,14 @@ extern void clear_top_tasks_bitmap(unsigned long *bitmap);
 #if defined(CONFIG_SCHED_TUNE)
 extern bool task_sched_boost(struct task_struct *p);
 extern int sync_cgroup_colocation(struct task_struct *p, bool insert);
-extern bool same_schedtune(struct task_struct *tsk1, struct task_struct *tsk2);
+extern bool schedtune_task_colocated(struct task_struct *p);
 extern void update_cgroup_boost_settings(void);
 extern void restore_cgroup_boost_settings(void);
 
 #else
-static inline bool
-same_schedtune(struct task_struct *tsk1, struct task_struct *tsk2)
+static inline bool schedtune_task_colocated(struct task_struct *p)
 {
-	return true;
+	return false;
 }
 
 static inline bool task_sched_boost(struct task_struct *p)
@@ -2952,18 +2991,22 @@ void note_task_waking(struct task_struct *p, u64 wallclock);
 
 static inline bool task_placement_boost_enabled(struct task_struct *p)
 {
-	if (task_sched_boost(p))
-		return sched_boost_policy() != SCHED_BOOST_NONE;
+	if (likely(sched_boost_policy() == SCHED_BOOST_NONE))
+		return false;
 
-	return false;
+	return task_sched_boost(p);
 }
-
 
 static inline enum sched_boost_policy task_boost_policy(struct task_struct *p)
 {
-	enum sched_boost_policy policy = task_sched_boost(p) ?
-							sched_boost_policy() :
-							SCHED_BOOST_NONE;
+	enum sched_boost_policy policy = sched_boost_policy();
+
+	if (likely(policy == SCHED_BOOST_NONE))
+		return SCHED_BOOST_NONE;
+
+	if (!task_sched_boost(p))
+		return SCHED_BOOST_NONE;
+
 	if (policy == SCHED_BOOST_ON_BIG) {
 		/*
 		 * Filter out tasks less than min task util threshold

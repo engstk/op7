@@ -28,8 +28,9 @@
 #include <linux/mm_types_task.h>
 #include <linux/task_io_accounting.h>
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_CONTROL_CENTER
+#ifdef CONFIG_CONTROL_CENTER
 #include <oneplus/control_center/control_center_helper.h>
+#endif
 
 /* task_struct member predeclarations (sorted alphabetically): */
 struct audit_context;
@@ -113,6 +114,20 @@ struct task_group;
 #define task_contributes_to_load(task)	((task->state & TASK_UNINTERRUPTIBLE) != 0 && \
 					 (task->flags & PF_FROZEN) == 0 && \
 					 (task->state & TASK_NOLOAD) == 0)
+
+#ifdef CONFIG_UXCHAIN
+#define GOLD_PLUS_CPU 7
+#define PREEMPT_DISABLE_NS 10000000
+extern int sysctl_uxchain_enabled;
+extern int sysctl_launcher_boost_enabled;
+extern void uxchain_mutex_list_add(struct task_struct *task,
+	struct list_head *entry, struct list_head *head, struct mutex *lock);
+extern void uxchain_dynamic_ux_boost(struct task_struct *owner,
+	struct task_struct *task);
+extern void uxchain_dynamic_ux_reset(struct task_struct *task);
+extern struct task_struct *get_futex_owner(u32 __user *uaddr2);
+extern int ux_thread(struct task_struct *task);
+#endif
 
 #ifdef CONFIG_DEBUG_ATOMIC_SLEEP
 
@@ -206,6 +221,63 @@ struct task_group;
 
 #endif
 
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+#define ODD(x) (bool)(x & 0x0000000000000001)
+#define TASK_READ_OVERLOAD_FLAG 0x0000000000000001
+#define TASK_WRITE_OVERLOAD_FLAG 0x0000000000000002
+#define TASK_CPU_OVERLOAD_FG_FLAG 0x0000000000000004
+#define TASK_CPU_OVERLOAD_BG_FLAG 0x0000000000000008
+#define TASK_RT_THREAD_FLAG 0x0000000000000010
+
+extern struct sample_window_t sample_window;
+extern u64 ohm_write_thresh;
+extern u64 ohm_read_thresh;
+extern u64 ohm_runtime_thresh_fg;
+extern u64 ohm_runtime_thresh_bg;
+
+struct task_load_info {
+	u64 write_bytes;
+	u64 read_bytes;
+	u64 runtime[2];
+	u64 task_sample_index;
+	u64 tli_overload_flag;
+};
+
+struct sample_window_t {
+	u64 timestamp;
+	u64 window_index;
+};
+#endif
+
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+struct uifirst_d_state {
+	u64 iowait_ns;
+	u64 downread_ns;
+	u64 downwrite_ns;
+	u64 mutex_ns;
+	u64 other_ns;
+	int cnt;
+};
+
+struct uifirst_s_state {
+	u64 binder_ns;
+	u64 epoll_ns;
+	u64 futex_ns;
+	u64 other_ns;
+	int cnt;
+};
+
+struct oneplus_uifirst_monitor_info {
+	u64 runnable_state;
+	u64 ltt_running_state; /* ns */
+	u64 mid_running_state; /* ns */
+	u64 big_running_state; /* ns */
+	struct uifirst_d_state d_state;
+	struct uifirst_s_state s_state;
+};
+
+#endif
+
 /* Task command name length: */
 #define TASK_COMM_LEN			16
 
@@ -277,6 +349,7 @@ extern int __must_check io_schedule_prepare(void);
 extern void io_schedule_finish(int token);
 extern long io_schedule_timeout(long timeout);
 extern void io_schedule(void);
+extern int set_task_boost(int boost, u64 period);
 
 /**
  * struct prev_cputime - snapshot of system and user cputime
@@ -507,7 +580,9 @@ struct sched_entity {
 	u64				sum_exec_runtime;
 	u64				vruntime;
 	u64				prev_sum_exec_runtime;
-
+#ifdef CONFIG_UXCHAIN
+	u64				vruntime_minus;
+#endif
 	u64				nr_migrations;
 
 	struct sched_statistics		statistics;
@@ -756,14 +831,16 @@ struct task_struct {
 	/* Per task flags (PF_*), defined further below: */
 	unsigned int			flags;
 	unsigned int			ptrace;
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	u64 rtstart_time;
+	u64 rtend_time;
+#endif
 
-    /* add for fd leak debug */
 	bool dump_fd_leak;
 
 	int compensate_time;
 	int compensate_need;
 
-        /* huruihuan add for kill task in D status */
 	unsigned int kill_flag;
 	struct timespec ttu;
 
@@ -790,7 +867,11 @@ struct task_struct {
 	const struct sched_class	*sched_class;
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;
-	u64 last_sleep_ts;
+	u64				 last_sleep_ts;
+
+	int				boost;
+	u64				boost_period;
+	u64				boost_expires;
 #ifdef CONFIG_SCHED_WALT
 	struct ravg ravg;
 	/*
@@ -1060,15 +1141,17 @@ struct task_struct {
 	struct seccomp			seccomp;
 
 	/* Thread group tracking: */
-	u32				parent_exec_id;
-	u32				self_exec_id;
+	u64				parent_exec_id;
+	u64				self_exec_id;
 
 	/* Protection against (de-)allocation: mm, files, fs, tty, keyrings, mems_allowed, mempolicy: */
 	spinlock_t			alloc_lock;
 
 	/* Protection of the PI data structures: */
 	raw_spinlock_t			pi_lock;
-
+#ifdef CONFIG_UXCHAIN
+	raw_spinlock_t			uxchain_lock;
+#endif
 	struct wake_q_node		wake_q;
 
 #ifdef CONFIG_RT_MUTEXES
@@ -1147,6 +1230,9 @@ struct task_struct {
 	siginfo_t			*last_siginfo;
 
 	struct task_io_accounting	ioac;
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+		struct task_load_info tli[2];
+#endif
 #ifdef CONFIG_PSI
 	/* Pressure stall state */
 	unsigned int			psi_flags;
@@ -1184,6 +1270,8 @@ struct task_struct {
 #endif
 	struct list_head		pi_state_list;
 	struct futex_pi_state		*pi_state_cache;
+	struct mutex			futex_exit_mutex;
+	unsigned int			futex_state;
 #endif
 #ifdef CONFIG_PERF_EVENTS
 	struct perf_event_context	*perf_event_ctxp[perf_nr_task_contexts];
@@ -1312,8 +1400,10 @@ struct task_struct {
 #endif /* CONFIG_TRACING */
 
 #ifdef CONFIG_KCOV
+	/* See kernel/kcov.c for more details. */
+
 	/* Coverage collection mode enabled for this task (0 if disabled): */
-	enum kcov_mode			kcov_mode;
+	unsigned int			kcov_mode;
 
 	/* Size of the kcov_area: */
 	unsigned int			kcov_size;
@@ -1323,6 +1413,12 @@ struct task_struct {
 
 	/* KCOV descriptor wired with this task or NULL: */
 	struct kcov			*kcov;
+
+	/* KCOV common handle for remote coverage collection: */
+	u64				kcov_handle;
+
+	/* KCOV sequence number: */
+	int				kcov_sequence;
 #endif
 
 #ifdef CONFIG_MEMCG
@@ -1370,6 +1466,21 @@ struct task_struct {
 	bool utask_slave;
 #endif
 
+#ifdef CONFIG_ONEPLUS_FG_OPT
+	int fuse_boost;
+#endif
+
+#ifdef CONFIG_ONEPLUS_HEALTHINFO
+	int stuck_trace;
+	struct oneplus_uifirst_monitor_info oneplus_stuck_info;
+	unsigned in_mutex:1;
+	unsigned in_downread:1;
+	unsigned in_downwrite:1;
+	unsigned in_futex:1;
+	unsigned in_binder:1;
+	unsigned in_epoll:1;
+#endif
+
 	/*
 	 * New fields for task_struct should be added above here, so that
 	 * they are included in the randomized portion of task_struct.
@@ -1379,18 +1490,28 @@ struct task_struct {
 #ifdef CONFIG_SMART_BOOST
 	int hot_count;
 #endif
+#ifdef CONFIG_UXCHAIN
+	int static_ux;
+	int dynamic_ux;
+	int ux_depth;
+	u64 oncpu_time;
+	int	prio_saved;
+	int	saved_flag;
+#endif
 
-	/* CPU-specific state of this task: */
-	struct thread_struct		thread;
+#ifdef CONFIG_CONTROL_CENTER
+	bool cc_enable;
+	struct cc_tsk_data *ctd;
+	u64 nice_effect_ts;
+	int cached_prio;
+#endif
 
-	/*
-	 * WARNING: on x86, 'thread_struct' contains a variable-sized
-	 * structure.  It *MUST* be at the end of 'task_struct'.
-	 *
-	 * Do not put anything below here!
-	 */
+#ifdef CONFIG_IM
+	int im_flag;
+#endif
+	atomic64_t cpu_dist[8];
+	atomic64_t total_cpu_dist[8];
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_HOUSTON
 #ifdef CONFIG_HOUSTON
 #ifndef HT_PERF_COUNT_MAX
 #define HT_PERF_COUNT_MAX 5
@@ -1399,6 +1520,7 @@ struct task_struct {
 	struct list_head rtg_node;
 	struct list_head rtg_perf_node;
 	s64 rtg_ts;
+	s64 rtg_ts2;
 	s64 rtg_period_ts;
 	u32 rtg_cnt;
 	u32 rtg_peak;
@@ -1427,18 +1549,23 @@ struct task_struct {
 #undef HT_PERF_COUNT_MAX
 #endif
 #endif
+	struct fuse_package *fpack;
+	/* CPU-specific state of this task: */
+	struct thread_struct		thread;
 
-// tedlin@ASTI 2019/06/12 add for CONFIG_CONTROL_CENTER
-#ifdef CONFIG_CONTROL_CENTER
-	bool cc_enable;
-	struct cc_tsk_data* ctd;
-#endif
-
-// add for chainboost CONFIG_ONEPLUS_CHAIN_BOOST
-	int main_boost_switch;
-	int main_wake_boost;
+	/*
+	 * WARNING: on x86, 'thread_struct' contains a variable-sized
+	 * structure.  It *MUST* be at the end of 'task_struct'.
+	 *
+	 * Do not put anything below here!
+	 */
 };
 
+struct fuse_package {
+	bool fuse_open_req;
+	struct file *filp;
+	char *iname;
+};
 static inline struct pid *task_pid(struct task_struct *task)
 {
 	return task->pids[PIDTYPE_PID].pid;
@@ -1618,7 +1745,6 @@ extern struct pid *cad_pid;
  */
 #define PF_IDLE			0x00000002	/* I am an IDLE thread */
 #define PF_EXITING		0x00000004	/* Getting shut down */
-#define PF_EXITPIDONE		0x00000008	/* PI exit done on shut down */
 #define PF_VCPU			0x00000010	/* I'm a virtual CPU */
 #define PF_WQ_WORKER		0x00000020	/* I'm a workqueue worker */
 #define PF_FORKNOEXEC		0x00000040	/* Forked but didn't exec */
@@ -1695,6 +1821,11 @@ static inline bool is_percpu_thread(void)
 #define PFA_SPEC_IB_FORCE_DISABLE	6	/* Indirect branch speculation permanently restricted */
 #define PFA_LMK_WAITING			7	/* Lowmemorykiller is waiting */
 
+#ifdef CONFIG_CGROUP_IOLIMIT
+
+#define PFA_IN_PAGEFAULT		27
+#endif
+
 #define TASK_PFA_TEST(name, func)					\
 	static inline bool task_##func(struct task_struct *p)		\
 	{ return test_bit(PFA_##name, &p->atomic_flags); }
@@ -1713,6 +1844,12 @@ TASK_PFA_SET(NO_NEW_PRIVS, no_new_privs)
 TASK_PFA_TEST(SPREAD_PAGE, spread_page)
 TASK_PFA_SET(SPREAD_PAGE, spread_page)
 TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)
+
+#ifdef CONFIG_CGROUP_IOLIMIT
+TASK_PFA_TEST(IN_PAGEFAULT, in_pagefault)
+TASK_PFA_SET(IN_PAGEFAULT, in_pagefault)
+TASK_PFA_CLEAR(IN_PAGEFAULT, in_pagefault)
+#endif
 
 TASK_PFA_TEST(SPREAD_SLAB, spread_slab)
 TASK_PFA_SET(SPREAD_SLAB, spread_slab)
@@ -1766,6 +1903,11 @@ static inline bool cpupri_check_rt(void)
 
 #ifndef cpu_relax_yield
 #define cpu_relax_yield() cpu_relax()
+#endif
+
+#ifdef CONFIG_CONTROL_CENTER
+extern void restore_user_nice_safe(struct task_struct *p);
+extern void set_user_nice_no_cache(struct task_struct *p, long nice);
 #endif
 
 extern int yield_to(struct task_struct *p, bool preempt);
@@ -1883,6 +2025,12 @@ static inline void set_tsk_thread_flag(struct task_struct *tsk, int flag)
 static inline void clear_tsk_thread_flag(struct task_struct *tsk, int flag)
 {
 	clear_ti_thread_flag(task_thread_info(tsk), flag);
+}
+
+static inline void update_tsk_thread_flag(struct task_struct *tsk, int flag,
+					  bool value)
+{
+	update_ti_thread_flag(task_thread_info(tsk), flag, value);
 }
 
 static inline int test_and_set_tsk_thread_flag(struct task_struct *tsk, int flag)
@@ -2051,5 +2199,13 @@ static inline void set_wake_up_idle(bool enabled)
 	else
 		current->flags &= ~PF_WAKE_UP_IDLE;
 }
+
+#ifdef CONFIG_ONEPLUS_TASKLOAD_INFO
+static inline void task_tli_init(struct task_struct *cur)
+{
+	memset(cur->tli, 0, sizeof(cur->tli));
+	cur->tli[ODD(sample_window.window_index)].task_sample_index = sample_window.window_index;
+}
+#endif
 
 #endif

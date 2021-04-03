@@ -13,6 +13,7 @@ struct memplus_cb_set {
 	void (*memplus_state_check_cb)(bool, int,
 		struct task_struct *, int, int);
 	bool (*memplus_check_isolate_page_cb)(struct page *);
+	void (*memplus_next_event_cb)(struct page *);
 };
 void register_cb_set(struct memplus_cb_set *set);
 extern bool memplus_enabled(void);
@@ -23,6 +24,7 @@ extern void memplus_move_anon_to_swapcache_lru(struct page *page);
 extern void memplus_state_check(bool legacy, int oom_adj,
 	struct task_struct *task, int type, int update);
 extern  bool memplus_check_isolate_page(struct page *page);
+extern void memplus_next_event(struct page *page);
 
 #define memplus_init_task_reclaim_stat(sig) \
 do { \

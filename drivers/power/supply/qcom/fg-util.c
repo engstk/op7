@@ -54,6 +54,23 @@ int fg_decode_voltage_15b(struct fg_sram_param *sp,
 	return sp[id].value;
 }
 
+#define CURRENT_24BIT_MSB_MASK	GENMASK(27, 16)
+#define CURRENT_24BIT_LSB_MASK	GENMASK(11, 0)
+int fg_decode_current_24b(struct fg_sram_param *sp,
+	enum fg_sram_param_id id, int value)
+{
+	int msb, lsb, val;
+
+	msb = value & CURRENT_24BIT_MSB_MASK;
+	lsb = value & CURRENT_24BIT_LSB_MASK;
+	val = (msb >> 4) | lsb;
+	val = sign_extend32(val, 23);
+	sp[id].value = div_s64((s64)val * sp[id].denmtr, sp[id].numrtr);
+	pr_debug("id: %d raw value: %x decoded value: %x\n", id, value,
+			sp[id].value);
+	return sp[id].value;
+}
+
 int fg_decode_current_16b(struct fg_sram_param *sp,
 				enum fg_sram_param_id id, int value)
 {
@@ -368,7 +385,6 @@ bool is_input_present(struct fg_dev *fg)
 	return is_usb_present(fg) || is_dc_present(fg);
 }
 
-/* @bsp, 2019/04/17 set Ibat 500mA by default */
 void fg_notify_charger(struct fg_dev *fg)
 {
 	union power_supply_propval prop = {0, };
@@ -400,42 +416,6 @@ void fg_notify_charger(struct fg_dev *fg)
 	fg_dbg(fg, FG_STATUS, "Notified charger on float voltage and FCC\n");
 }
 
-/*
-void fg_notify_charger(struct fg_dev *fg)
-{
-	union power_supply_propval prop = {0, };
-	int rc;
-
-	if (!fg->batt_psy)
-		return;
-
-	if (!fg->profile_available)
-		return;
-
-	if (fg->bp.float_volt_uv > 0) {
-		prop.intval = fg->bp.float_volt_uv;
-		rc = power_supply_set_property(fg->batt_psy,
-				POWER_SUPPLY_PROP_VOLTAGE_MAX, &prop);
-		if (rc < 0) {
-			pr_err("Error in setting voltage_max property on batt_psy, rc=%d\n",
-				rc);
-			return;
-		}
-	}
-
-	if (fg->bp.fastchg_curr_ma > 0) {
-		prop.intval = fg->bp.fastchg_curr_ma * 1000;
-		rc = power_supply_set_property(fg->batt_psy,
-				POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
-				&prop);
-		if (rc < 0) {
-			pr_err("Error in setting constant_charge_current_max property on batt_psy, rc=%d\n",
-				rc);
-			return;
-		}
-	}
-}
-*/
 
 bool batt_psy_initialized(struct fg_dev *fg)
 {
@@ -739,7 +719,7 @@ static inline bool is_sec_access(struct fg_dev *fg, int addr)
 	if (fg->version != GEN3_FG)
 		return false;
 
-	return ((addr & 0x00FF) > 0xD0);
+	return ((addr & 0x00FF) > 0xB8);
 }
 
 int fg_write(struct fg_dev *fg, int addr, u8 *val, int len)
@@ -1698,4 +1678,28 @@ int fg_debugfs_create(struct fg_dev *fg)
 err_remove_fs:
 	debugfs_remove_recursive(fg->dfs_root);
 	return -ENOMEM;
+}
+
+void fg_stay_awake(struct fg_dev *fg, int awake_reason)
+{
+	spin_lock(&fg->awake_lock);
+
+	if (!fg->awake_status)
+		pm_stay_awake(fg->dev);
+
+	fg->awake_status |= awake_reason;
+
+	spin_unlock(&fg->awake_lock);
+}
+
+void fg_relax(struct fg_dev *fg, int awake_reason)
+{
+	spin_lock(&fg->awake_lock);
+
+	fg->awake_status &= ~awake_reason;
+
+	if (!fg->awake_status)
+		pm_relax(fg->dev);
+
+	spin_unlock(&fg->awake_lock);
 }

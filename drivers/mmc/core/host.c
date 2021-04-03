@@ -30,6 +30,7 @@
 #include <linux/mmc/slot-gpio.h>
 
 #include "core.h"
+#include "crypto.h"
 #include "host.h"
 #include "slot-gpio.h"
 #include "pwrseq.h"
@@ -478,6 +479,16 @@ int mmc_retune(struct mmc_host *host)
 			host->ops->prepare_hs400_tuning(host, &host->ios);
 	}
 
+	/*
+	 * Timing should be adjusted to the HS400 target
+	 * operation frequency for tuning process.
+	 * Similar handling is also done in mmc_hs200_tuning()
+	 * This is handled properly in sdhci-msm.c from msm-5.4 onwards.
+	 */
+	if (host->card->mmc_avail_type & EXT_CSD_CARD_TYPE_HS400 &&
+		host->ios.bus_width == MMC_BUS_WIDTH_8)
+		mmc_set_timing(host, MMC_TIMING_MMC_HS400);
+
 	err = mmc_execute_tuning(host->card);
 	if (err)
 		goto out;
@@ -701,8 +712,6 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 
 	if (mmc_gpio_alloc(host)) {
 		put_device(&host->class_dev);
-		ida_simple_remove(&mmc_host_ida, host->index);
-		kfree(host);
 		return NULL;
 	}
 
@@ -731,6 +740,7 @@ struct mmc_host *mmc_alloc_host(int extra, struct device *dev)
 	host->max_req_size = PAGE_SIZE;
 	host->max_blk_size = 512;
 	host->max_blk_count = PAGE_SIZE / 512;
+	host->ios.power_delay_ms = 10;
 
 	return host;
 }
@@ -1048,6 +1058,7 @@ EXPORT_SYMBOL(mmc_remove_host);
  */
 void mmc_free_host(struct mmc_host *host)
 {
+	mmc_crypto_free_host(host);
 	mmc_pwrseq_free(host);
 	put_device(&host->class_dev);
 }
