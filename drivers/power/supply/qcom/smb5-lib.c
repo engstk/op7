@@ -7770,7 +7770,7 @@ static int op_set_collapse_fet(struct smb_charger *chg, bool on)
 	return rc;
 }
 
-pm_schg_dcdc_configure_vsysmin(struct smb_charger *chg, int val)
+int pm_schg_dcdc_configure_vsysmin(struct smb_charger *chg, int val)
 {
 
 	int vsys_min_mask = 0x07; // BIT<2:0>

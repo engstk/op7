@@ -2069,7 +2069,7 @@ static ssize_t ipa_debugfs_enable_disable_drop_stats(struct file *file,
 		goto bail;
 	}
 
-	missing = copy_from_user(dbg_buff, ubuf, count);
+	missing = copy_from_user(dbg_buff, ubuf, sizeof(count));
 	if (missing) {
 		ret = -EFAULT;
 		goto bail;

@@ -62,7 +62,7 @@ static struct ccdm_info ginfo = {
 };
 
 /* helper */
-static inline clamp(long long val, long long lo, long long hi)
+static inline long long clamp(long long val, long long lo, long long hi)
 {
 	val = val >= lo ? val : lo;
 	val = val <= hi ? val : hi;
