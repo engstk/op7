@@ -52,7 +52,6 @@ bool memplus_check_isolate_page(struct page *page)
 		return cb_set.memplus_check_isolate_page_cb(page);
 	return false;
 }
-
 void memplus_next_event(struct page *page)
 {
 	if (cb_set.memplus_next_event_cb)

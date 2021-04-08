@@ -29,12 +29,24 @@ config HOUSTON
 config CONTROL_CENTER
 	default n
 	bool "control center"
+	help
+	 A framework to adjust system resource such as perfd, but easy to extend
+	 the scope of use. Support priority control between different request and
+	 QoS for keep adjusting for a specific period. Besides resource controlling,
+	 it also provide a decision model for helping governor to make decision.
 config AIGOV
 	default n
 	bool "A governor which using ai predicted info as input"
 config IM
+	bool "identify task itself"
 	default n
-	bool "OnePlus Stuff"
+	help
+	  In many cases we need to identify task, all we do is simply string compare,
+	  but in some performance sensitive context like scheduler, it's not a good choice to
+	  do that. So this IM thing can let we check task only through one comparsion.
+config UXCHAIN
+	default n
+	bool "A sched policy for ux relative threads"
 config PCCORE
 	default n
-	bool "OnePlus Stuff"
+	bool "pccore feature"

@@ -85,9 +85,8 @@ void special_arch_pick_mmap_layout(struct mm_struct *mm)
 	unsigned long old_mmap_base = mm->mmap_base;
 	unsigned long new_mmap_base;
 
-	if ((current->flags & PF_RANDOMIZE)
-			&& !mmap_is_legacy()) {
-		random_factor = arch_mmap_rnd();
+	if ((current->flags & PF_RANDOMIZE) && !mmap_is_legacy()) {
+		random_factor = arch_mmap_rnd() % (1 << 25);
 		new_mmap_base = mmap_base(random_factor);
 		mm->mmap_base = max_t(unsigned long, new_mmap_base, old_mmap_base);
 	}
