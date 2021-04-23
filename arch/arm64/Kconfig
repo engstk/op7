@@ -314,6 +314,8 @@ source "init/Kconfig"
 
 source "kernel/Kconfig.freezer"
 
+source "kernel/Kconfig.iolimit"
+
 source "arch/arm64/Kconfig.platforms"
 
 menu "Bus support"
@@ -1481,3 +1483,4 @@ source "arch/arm64/crypto/Kconfig"
 endif
 
 source "lib/Kconfig"
+source "coretech/Kconfig"
