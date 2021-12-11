@@ -431,11 +431,11 @@ KBUILD_CFLAGS   := -Wall -Wundef -Wstrict-prototypes -Wno-trigraphs \
 		   -fno-strict-aliasing -fno-common -fshort-wchar \
 		   -Werror-implicit-function-declaration \
 		   -Wno-format-security \
-		   -std=gnu89 \
-		   -mcpu=cortex-a55 -fdiagnostics-color=always -pipe \
-		   -Wno-void-pointer-to-enum-cast -Wno-misleading-indentation -Wno-unused-function -Wno-bool-operation \
-		   -Wno-unsequenced -Wno-void-pointer-to-int-cast -Wno-unused-variable -Wno-pointer-to-int-cast -Wno-pointer-to-enum-cast \
-		   -Wno-fortify-source -Wno-strlcpy-strlcat-size -Wno-align-mismatch -Wno-unused-but-set-variable
+		   -std=gnu89
+		   #-mcpu=cortex-a55 -fdiagnostics-color=always -pipe \
+		   #-Wno-void-pointer-to-enum-cast -Wno-misleading-indentation -Wno-unused-function -Wno-bool-operation \
+		   #-Wno-unsequenced -Wno-void-pointer-to-int-cast -Wno-unused-variable -Wno-pointer-to-int-cast -Wno-pointer-to-enum-cast \
+		   #-Wno-fortify-source -Wno-strlcpy-strlcat-size -Wno-align-mismatch -Wno-unused-but-set-variable
 
 ifeq ($(TARGET_BOARD_TYPE),auto)
 KBUILD_CFLAGS    += -DCONFIG_PLATFORM_AUTO
