@@ -1,2 +1,0 @@
-header-y += protocol/
-header-y += ioctl.h

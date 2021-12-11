@@ -1,3 +1,0 @@
-#UAPI export list
-header-y += nfcinfo.h
-header-y += ntaginfo.h
